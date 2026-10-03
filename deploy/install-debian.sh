@@ -1,0 +1,68 @@
+#!/bin/sh
+# Installs media-ripper as a systemd service on Debian 12 / Ubuntu 22.04+
+# including MakeMKV built from source. Run as root on the ripping machine.
+#
+#   MAKEMKV_VERSION=1.17.9 sh deploy/install-debian.sh
+#
+# Afterwards edit /etc/media-ripper/config.yaml (output path, TMDB key,
+# MakeMKV key) and run: systemctl enable --now media-ripper
+set -eu
+
+MAKEMKV_VERSION="${MAKEMKV_VERSION:-1.17.9}"
+PREFIX="${PREFIX:-/usr/local}"
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "run as root" >&2
+  exit 1
+fi
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y --no-install-recommends \
+  ffmpeg mkvtoolnix eject ca-certificates curl \
+  build-essential pkg-config libc6-dev libssl-dev libexpat1-dev libavcodec-dev libgl1-mesa-dev zlib1g-dev
+
+# --- MakeMKV ---------------------------------------------------------------
+if ! command -v makemkvcon >/dev/null 2>&1 || ! makemkvcon -r --noscan info disc:9999 2>/dev/null | grep -q "MakeMKV v${MAKEMKV_VERSION}"; then
+  tmp="$(mktemp -d)"
+  cd "$tmp"
+  curl -fsSLO "https://www.makemkv.com/download/makemkv-oss-${MAKEMKV_VERSION}.tar.gz"
+  curl -fsSLO "https://www.makemkv.com/download/makemkv-bin-${MAKEMKV_VERSION}.tar.gz"
+  tar xzf "makemkv-oss-${MAKEMKV_VERSION}.tar.gz"
+  tar xzf "makemkv-bin-${MAKEMKV_VERSION}.tar.gz"
+  (cd "makemkv-oss-${MAKEMKV_VERSION}" && ./configure --disable-gui --prefix="$PREFIX" && make -j"$(nproc)" && make install)
+  (cd "makemkv-bin-${MAKEMKV_VERSION}" && mkdir -p tmp && echo accepted > tmp/eula_accepted && make PREFIX="$PREFIX" && make install PREFIX="$PREFIX")
+  ldconfig
+  cd /
+  rm -rf "$tmp"
+fi
+
+# --- media-ripper binary -----------------------------------------------------
+if [ -x "$HERE/bin/media-ripper" ]; then
+  install -m 0755 "$HERE/bin/media-ripper" "$PREFIX/bin/media-ripper"
+elif command -v go >/dev/null 2>&1; then
+  (cd "$HERE" && CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$PREFIX/bin/media-ripper" ./cmd/media-ripper)
+else
+  echo "no prebuilt bin/media-ripper and no Go toolchain; run 'make build' first" >&2
+  exit 1
+fi
+
+# --- user, dirs, config, service ---------------------------------------------
+id media-ripper >/dev/null 2>&1 || useradd --system --home-dir /var/lib/media-ripper --shell /usr/sbin/nologin --groups cdrom media-ripper
+install -d -o media-ripper -g media-ripper -m 0775 /var/lib/media-ripper
+install -d -m 0755 /etc/media-ripper
+[ -f /etc/media-ripper/config.yaml ] || install -m 0640 -g media-ripper "$HERE/config.example.yaml" /etc/media-ripper/config.yaml
+install -m 0644 "$HERE/deploy/99-media-ripper.rules" /etc/udev/rules.d/99-media-ripper.rules
+udevadm control --reload && udevadm trigger || true
+install -m 0644 "$HERE/deploy/media-ripper.service" /etc/systemd/system/media-ripper.service
+systemctl daemon-reload
+
+cat <<MSG
+
+Installed. Next:
+  1. edit /etc/media-ripper/config.yaml  (output.path, metadata.tmdb_api_key, makemkv.key)
+  2. media-ripper check -config /etc/media-ripper/config.yaml
+  3. systemctl enable --now media-ripper
+  4. open http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080
+MSG

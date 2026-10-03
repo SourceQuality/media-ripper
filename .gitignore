@@ -1,0 +1,6 @@
+/bin/
+/dist/
+/workspace/
+config.yaml
+*.mkv
+.DS_Store

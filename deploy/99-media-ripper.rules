@@ -1,0 +1,4 @@
+# Give the cdrom group access to the SCSI generic node of optical drives so
+# makemkvcon can run without root. Install to /etc/udev/rules.d/ and run
+# `udevadm control --reload && udevadm trigger`.
+SUBSYSTEM=="scsi_generic", ATTRS{type}=="5", GROUP="cdrom", MODE="0660"

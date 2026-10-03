@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Media Ripper</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%236b7cff'/%3E%3Ccircle cx='12' cy='12' r='3' fill='%23fff'/%3E%3C/svg%3E">
+</head>
+<body>
+<header>
+  <h1>Media Ripper</h1>
+  <div class="spacer"></div>
+  <span id="version" class="muted"></span>
+  <button id="theme" class="icon" title="Theme" aria-label="Toggle theme">◐</button>
+</header>
+<main>
+  <section id="drives"></section>
+  <section>
+    <h2>Recent</h2>
+    <table id="recent"><thead><tr><th>When</th><th>Drive</th><th>Title</th><th>Result</th><th>Time</th><th></th></tr></thead><tbody></tbody></table>
+  </section>
+</main>
+<dialog id="detail"><div class="dialog-head"><strong id="detail-title"></strong><button class="icon" id="detail-close" aria-label="Close">✕</button></div><pre id="detail-log"></pre></dialog>
+<script src="app.js"></script>
+</body>
+</html>

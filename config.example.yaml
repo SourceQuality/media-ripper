@@ -1,0 +1,133 @@
+# media-ripper configuration. Copy to /etc/media-ripper/config.yaml (or
+# ./config.yaml) and edit. Everything is decided here; nothing prompts.
+#
+# Secrets can also come from the environment:
+#   MR_TMDB_API_KEY, MR_MAKEMKV_KEY, MR_OUTPUT_PATH, MR_WORKSPACE, MR_DRIVES,
+#   MR_WEB_LISTEN, MR_LOG_LEVEL, MR_NTFY_URL, MR_NTFY_TOKEN, MR_WEBHOOK_URL
+
+# Drives to watch. Empty = every /dev/sr* found (and hot-plugged later).
+drives: []
+#  - /dev/sr0
+
+# How often each drive is checked for a disc.
+poll_interval: 3s
+
+# Local scratch space for rips in progress and state. Needs room for one
+# full disc per drive (up to ~100 GB for UHD). Put it on local disk, not the
+# network share.
+workspace: /var/lib/media-ripper
+
+output:
+  # Final library location. A network mount is fine; files are copied there
+  # only after the rip is complete.
+  path: /mnt/media
+  movies_subdir: Movies
+  tv_subdir: TV Shows
+  unidentified_subdir: _unidentified
+  # Naming templates (Plex / Jellyfin conventions by default).
+  # Tokens: {title} {year} {series} {season} {episode} {episode_title}
+  #         {label} {title_id} {resolution} {source} {date} {datetime}
+  # A :02 suffix zero-pads numbers. Double episodes render as E03-E04.
+  movie_template: "{title} ({year})/{title} ({year}).mkv"
+  tv_template: "{series} ({year})/Season {season:02}/{series} - S{season:02}E{episode:02} - {episode_title}.mkv"
+  unidentified_template: "{label} {date}/{label} - t{title_id:02}.mkv"
+  # false = never clobber; a " (2)" suffix is added instead.
+  overwrite: false
+  dir_mode: 0775
+  file_mode: 0664
+  # Keep the partial rip folder when a job fails (for debugging).
+  keep_workspace_on_error: false
+
+makemkv:
+  binary: makemkvcon
+  # License or beta key. Written to ~/.MakeMKV/settings.conf at startup.
+  key: ""
+  # Titles shorter than this many seconds are not even listed by MakeMKV.
+  min_length: 120
+  timeout: 6h          # per title rip
+  scan_timeout: 20m
+  retries: 1
+  extra_args: []
+  # Where settings.conf lives (default ~/.MakeMKV). Set write_settings: false
+  # to manage that file yourself.
+  settings_dir: ""
+  write_settings: true
+
+metadata:
+  provider: tmdb       # tmdb | none
+  tmdb_api_key: ""
+  language: en-US
+  timeout: 20s
+  # Fix discs whose label is useless or misleading. Key = volume label as
+  # printed by `media-ripper label`; value = what to search for. Season and
+  # disc hints are understood ("Friends S3 D2", "The Matrix 1999").
+  label_overrides: {}
+  #  "BD_ROM_2": "Blade Runner 2049"
+  #  "LOGICAL_VOLUME_ID": "Friends S1 D2"
+
+selection:
+  # Audio/subtitle languages to keep (ISO 639-2 codes). Empty = keep every
+  # track. Untagged tracks are always kept.
+  languages: []
+  #  - eng
+  #  - jpn
+  # A movie title must be within this much of the TMDB runtime.
+  movie_runtime_tolerance: 8m
+  # Episode titles must be within ±35% of the episode runtime.
+  tv_episode_tolerance: 0.35
+  min_movie_duration: 40m
+  min_episode_duration: 8m
+  # What to do when the disc cannot be identified: longest | all | skip
+  unidentified_strategy: longest
+  # Treat a title about twice the episode length as a two-part episode.
+  allow_double_episodes: true
+
+postprocess:
+  # none   = deliver exactly what MakeMKV wrote
+  # remux  = stream copy (no re-encode): set the file title, apply the
+  #          language filter above. Uses mkvmerge, else ffmpeg.
+  # custom = run custom_command with {input} {output} {title} placeholders;
+  #          this is where a transcode would go.
+  mode: remux
+  tool: auto           # auto | mkvmerge | ffmpeg
+  set_title: true
+  custom_command: []
+  #  - ffmpeg
+  #  - -i
+  #  - "{input}"
+  #  - -map
+  #  - "0"
+  #  - -c:v
+  #  - libx265
+  #  - -crf
+  #  - "18"
+  #  - -c:a
+  #  - copy
+  #  - -c:s
+  #  - copy
+  #  - "{output}"
+  custom_extension: mkv
+  timeout: 6h
+
+eject:
+  on_success: true
+  on_failure: true
+  close_tray_on_start: false
+  # A disc that was ripped before is ejected without ripping. Set true to rip
+  # it again, or press Rip in the web UI for a one-off.
+  rerip_same_disc: false
+
+web:
+  enabled: true
+  listen: ":8080"
+
+notify:
+  # Optional. ntfy topic URL, e.g. https://ntfy.sh/my-ripper
+  ntfy_url: ""
+  ntfy_token: ""
+  # Optional. Receives a JSON POST per event.
+  webhook_url: ""
+
+log:
+  level: info          # debug | info | warn | error
+  format: text         # text | json
