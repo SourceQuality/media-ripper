@@ -35,7 +35,7 @@ RUN cd makemkv-bin-${MAKEMKV_VERSION} && mkdir -p tmp && echo accepted > tmp/eul
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates ffmpeg mkvtoolnix eject libssl3 libexpat1 libavcodec59 zlib1g tini \
+      ca-certificates ffmpeg mkvtoolnix eject tesseract-ocr tesseract-ocr-eng libssl3 libexpat1 libavcodec59 zlib1g tini \
     && rm -rf /var/lib/apt/lists/*
 # makemkv-oss and makemkv-bin install only into /usr/local (bin, lib, share).
 COPY --from=makemkv /usr/local/ /usr/local/

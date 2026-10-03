@@ -20,6 +20,7 @@ const (
 	StageSelecting   Stage = "selecting"
 	StageRipping     Stage = "ripping"
 	StagePostProcess Stage = "postprocessing"
+	StageHandoff     Stage = "handoff"
 	StageDelivering  Stage = "delivering"
 	StageDone        Stage = "done"
 	StageFailed      Stage = "failed"
@@ -75,6 +76,8 @@ type Job struct {
 	Titles    []TitleSummary      `json:"titles,omitempty"`
 	Outputs   []Output            `json:"outputs,omitempty"`
 	Error     string              `json:"error,omitempty"`
+	Warnings  []string            `json:"warnings,omitempty"`
+	Ejected   bool                `json:"ejected,omitempty"`
 	Log       []LogLine           `json:"log,omitempty"`
 	Current   int                 `json:"current,omitempty"` // 1-based pick in progress
 	Total     int                 `json:"total,omitempty"`   // number of picks
@@ -131,6 +134,12 @@ func (j *Job) logf(format string, args ...any) {
 	}
 }
 
+func (j *Job) warn(msg string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.Warnings = append(j.Warnings, msg)
+}
+
 func (j *Job) set(fn func(j *Job)) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -158,8 +167,9 @@ func (j *Job) Snapshot() Job {
 		ID: j.ID, Drive: j.Drive, Fingerprint: j.Fingerprint, Label: j.Label, DiscType: j.DiscType,
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
 		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun,
-		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total,
+		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected,
 	}
+	c.Warnings = append([]string(nil), j.Warnings...)
 	if !c.Stage.Terminal() {
 		c.Elapsed = time.Since(j.StartedAt).Round(time.Second).String()
 	}

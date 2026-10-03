@@ -18,6 +18,7 @@ type Identity struct {
 	Title          string        `json:"title"`
 	Year           int           `json:"year,omitempty"`
 	TMDBID         int           `json:"tmdb_id,omitempty"`
+	TVDBID         int           `json:"tvdb_id,omitempty"`
 	Runtime        time.Duration `json:"runtime,omitempty"` // movie runtime
 	Season         int           `json:"season,omitempty"`
 	Disc           int           `json:"disc,omitempty"`

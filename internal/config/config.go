@@ -82,6 +82,7 @@ type Config struct {
 	Metadata    Metadata    `yaml:"metadata" json:"metadata"`
 	Selection   Selection   `yaml:"selection" json:"selection"`
 	PostProcess PostProcess `yaml:"postprocess" json:"postprocess"`
+	Arr         Arr         `yaml:"arr" json:"arr"`
 	Eject       Eject       `yaml:"eject" json:"eject"`
 	Web         Web         `yaml:"web" json:"web"`
 	Notify      Notify      `yaml:"notify" json:"notify"`
@@ -123,7 +124,45 @@ type Metadata struct {
 	Language       string            `yaml:"language" json:"language"`
 	Timeout        Duration          `yaml:"timeout" json:"timeout"`
 	LabelOverrides map[string]string `yaml:"label_overrides" json:"label_overrides"`
+	OCR            OCR               `yaml:"ocr" json:"ocr"`
 }
+
+// OCR identifies discs with useless labels by reading the title card and
+// credits of the ripped file.
+type OCR struct {
+	Enabled       bool     `yaml:"enabled" json:"enabled"`
+	Tesseract     string   `yaml:"tesseract" json:"tesseract"`
+	Languages     string   `yaml:"languages" json:"languages"`
+	HeadMinutes   int      `yaml:"head_minutes" json:"head_minutes"`
+	TailMinutes   int      `yaml:"tail_minutes" json:"tail_minutes"`
+	FramesPerMin  int      `yaml:"frames_per_minute" json:"frames_per_minute"`
+	MaxCandidates int      `yaml:"max_candidates" json:"max_candidates"`
+	Timeout       Duration `yaml:"timeout" json:"timeout"`
+}
+
+// Arr configures the Radarr and Sonarr handoff.
+type Arr struct {
+	Radarr        ArrApp   `yaml:"radarr" json:"radarr"`
+	Sonarr        ArrApp   `yaml:"sonarr" json:"sonarr"`
+	StagingSubdir string   `yaml:"staging_subdir" json:"staging_subdir"`
+	ImportTimeout Duration `yaml:"import_timeout" json:"import_timeout"`
+}
+
+// ArrApp is one Radarr or Sonarr instance.
+type ArrApp struct {
+	Enabled        bool              `yaml:"enabled" json:"enabled"`
+	URL            string            `yaml:"url" json:"url"`
+	APIKey         string            `yaml:"api_key" json:"api_key"`
+	RootFolder     string            `yaml:"root_folder" json:"root_folder"`
+	QualityProfile string            `yaml:"quality_profile" json:"quality_profile"`
+	AddMissing     bool              `yaml:"add_missing" json:"add_missing"`
+	Monitored      bool              `yaml:"monitored" json:"monitored"`
+	ImportMode     string            `yaml:"import_mode" json:"import_mode"`
+	PathMap        map[string]string `yaml:"path_map" json:"path_map"`
+}
+
+// Configured reports whether the app can be talked to.
+func (a ArrApp) Configured() bool { return a.Enabled && a.URL != "" && a.APIKey != "" }
 
 // Selection tunes how titles are matched to the movie or episodes.
 type Selection struct {
@@ -149,6 +188,7 @@ type PostProcess struct {
 // Eject controls tray behaviour.
 type Eject struct {
 	OnSuccess        bool `yaml:"on_success" json:"on_success"`
+	AfterRip         bool `yaml:"after_rip" json:"after_rip"`
 	OnFailure        bool `yaml:"on_failure" json:"on_failure"`
 	CloseTrayOnStart bool `yaml:"close_tray_on_start" json:"close_tray_on_start"`
 	ReripSameDisc    bool `yaml:"rerip_same_disc" json:"rerip_same_disc"`
@@ -197,9 +237,24 @@ func Default() Config {
 			WriteSettings: true,
 		},
 		Metadata: Metadata{
-			Provider: "tmdb",
+			Provider: "auto",
 			Language: "en-US",
 			Timeout:  Duration(20 * time.Second),
+			OCR: OCR{
+				Tesseract:     "tesseract",
+				Languages:     "eng",
+				HeadMinutes:   8,
+				TailMinutes:   4,
+				FramesPerMin:  20,
+				MaxCandidates: 8,
+				Timeout:       Duration(20 * time.Minute),
+			},
+		},
+		Arr: Arr{
+			Radarr:        ArrApp{AddMissing: true, ImportMode: "move"},
+			Sonarr:        ArrApp{AddMissing: true, ImportMode: "move"},
+			StagingSubdir: "_incoming",
+			ImportTimeout: Duration(10 * time.Minute),
 		},
 		Selection: Selection{
 			MovieRuntimeTolerance: Duration(8 * time.Minute),
@@ -218,6 +273,7 @@ func Default() Config {
 		},
 		Eject: Eject{
 			OnSuccess: true,
+			AfterRip:  true,
 			OnFailure: true,
 		},
 		Web: Web{
@@ -319,6 +375,10 @@ func (c *Config) KeepEnvOverrides(prev *Config) {
 			c.Notify.NtfyToken = prev.Notify.NtfyToken
 		case "notify.webhook_url":
 			c.Notify.WebhookURL = prev.Notify.WebhookURL
+		case "arr.radarr.api_key":
+			c.Arr.Radarr.APIKey = prev.Arr.Radarr.APIKey
+		case "arr.sonarr.api_key":
+			c.Arr.Sonarr.APIKey = prev.Arr.Sonarr.APIKey
 		}
 	}
 }
@@ -363,6 +423,8 @@ func applyEnv(cfg *Config) {
 	set("MR_NTFY_URL", "notify.ntfy_url", &cfg.Notify.NtfyURL)
 	set("MR_NTFY_TOKEN", "notify.ntfy_token", &cfg.Notify.NtfyToken)
 	set("MR_WEBHOOK_URL", "notify.webhook_url", &cfg.Notify.WebhookURL)
+	set("MR_RADARR_API_KEY", "arr.radarr.api_key", &cfg.Arr.Radarr.APIKey)
+	set("MR_SONARR_API_KEY", "arr.sonarr.api_key", &cfg.Arr.Sonarr.APIKey)
 	if v := os.Getenv("MR_DRIVES"); v != "" {
 		cfg.EnvOverrides = append(cfg.EnvOverrides, "drives")
 		cfg.Drives = nil
@@ -401,9 +463,28 @@ func (c *Config) Validate() error {
 		errs = append(errs, errors.New("postprocess.custom_command is required when mode is custom"))
 	}
 	switch c.Metadata.Provider {
-	case "tmdb", "none":
+	case "auto", "tmdb", "arr", "none":
 	default:
-		errs = append(errs, fmt.Errorf("metadata.provider %q must be tmdb or none", c.Metadata.Provider))
+		errs = append(errs, fmt.Errorf("metadata.provider %q must be auto, tmdb, arr or none", c.Metadata.Provider))
+	}
+	for name, app := range map[string]ArrApp{"radarr": c.Arr.Radarr, "sonarr": c.Arr.Sonarr} {
+		if !app.Enabled {
+			continue
+		}
+		if app.URL == "" || app.APIKey == "" {
+			errs = append(errs, fmt.Errorf("arr.%s needs url and api_key", name))
+		}
+		switch strings.ToLower(app.ImportMode) {
+		case "move", "copy":
+		default:
+			errs = append(errs, fmt.Errorf("arr.%s.import_mode %q must be move or copy", name, app.ImportMode))
+		}
+		if app.AddMissing && app.RootFolder == "" {
+			errs = append(errs, fmt.Errorf("arr.%s.root_folder is required when add_missing is on", name))
+		}
+	}
+	if c.Metadata.OCR.Enabled && c.Metadata.OCR.FramesPerMin <= 0 {
+		errs = append(errs, errors.New("metadata.ocr.frames_per_minute must be positive"))
 	}
 	switch c.Selection.UnidentifiedStrategy {
 	case "longest", "all", "skip":
@@ -433,7 +514,7 @@ func (c *Config) RipDir() string { return filepath.Join(c.Workspace, "rips") }
 func (c *Config) StateDir() string { return filepath.Join(c.Workspace, "state") }
 
 // SecretKeys are the dotted keys whose values never leave the server.
-var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token"}
+var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "arr.radarr.api_key", "arr.sonarr.api_key"}
 
 func (c *Config) secret(key string) *string {
 	switch key {
@@ -443,6 +524,10 @@ func (c *Config) secret(key string) *string {
 		return &c.Metadata.TMDBAPIKey
 	case "notify.ntfy_token":
 		return &c.Notify.NtfyToken
+	case "arr.radarr.api_key":
+		return &c.Arr.Radarr.APIKey
+	case "arr.sonarr.api_key":
+		return &c.Arr.Sonarr.APIKey
 	}
 	return nil
 }

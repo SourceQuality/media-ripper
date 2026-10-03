@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sourcequality/media-ripper/internal/arr"
 	"github.com/sourcequality/media-ripper/internal/config"
 	"github.com/sourcequality/media-ripper/internal/drive"
 	"github.com/sourcequality/media-ripper/internal/makemkv"
@@ -38,6 +39,8 @@ type Deps struct {
 	Logger   *slog.Logger
 	// OpenDrive lets tests substitute a fake drive.
 	OpenDrive func(path string) (drive.Drive, error)
+	// OCRTools overrides the ffmpeg and tesseract binaries (tests).
+	OCRTools []string
 }
 
 // runtime is one immutable configuration generation with the components
@@ -47,6 +50,9 @@ type runtime struct {
 	mk       *makemkv.Client
 	provider metadata.Provider
 	notifier *notify.Notifier
+	radarr   *arr.Client
+	sonarr   *arr.Client
+	ocrTools []string // test hook: [ffmpeg, tesseract]
 }
 
 // Manager owns one runner per drive.
@@ -92,8 +98,44 @@ func (m *Manager) SetConfig(cfg *config.Config) []string {
 	return restart
 }
 
+// provider assembles the identification chain for the configured mode.
+func (m *Manager) provider(cfg *config.Config, rt *runtime) metadata.Provider {
+	var chain metadata.Chain
+	mode := cfg.Metadata.Provider
+	if mode == "none" {
+		return metadata.NoneProvider{}
+	}
+	if (mode == "auto" || mode == "tmdb") && cfg.Metadata.TMDBAPIKey != "" {
+		t := metadata.NewTMDB(cfg.Metadata.TMDBAPIKey, cfg.Metadata.Language, cfg.Metadata.Timeout.D())
+		t.Logger = m.log
+		chain = append(chain, t)
+	}
+	if (mode == "auto" || mode == "arr") && (rt.radarr != nil || rt.sonarr != nil) {
+		p := &metadata.ArrProvider{Logger: m.log}
+		if rt.radarr != nil {
+			p.Radarr = arr.LookupAdapter{Client: rt.radarr}
+		}
+		if rt.sonarr != nil {
+			p.Sonarr = arr.LookupAdapter{Client: rt.sonarr}
+		}
+		chain = append(chain, p)
+	}
+	if len(chain) == 0 {
+		switch mode {
+		case "tmdb":
+			m.log.Warn("metadata.tmdb_api_key not set; discs will not be identified")
+		case "arr":
+			m.log.Warn("no radarr or sonarr configured; discs will not be identified")
+		default:
+			m.log.Warn("no metadata source configured (tmdb key or radarr/sonarr); discs will not be identified")
+		}
+		return metadata.NoneProvider{}
+	}
+	return chain
+}
+
 func (m *Manager) build(cfg *config.Config) *runtime {
-	rt := &runtime{cfg: cfg, mk: m.deps.MakeMKV, provider: m.deps.Metadata, notifier: m.deps.Notifier}
+	rt := &runtime{cfg: cfg, mk: m.deps.MakeMKV, provider: m.deps.Metadata, notifier: m.deps.Notifier, ocrTools: m.deps.OCRTools}
 	if rt.mk == nil {
 		rt.mk = &makemkv.Client{
 			Binary:      cfg.MakeMKV.Binary,
@@ -104,17 +146,10 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 			Logger:      m.log,
 		}
 	}
+	rt.radarr = arr.New(arr.Radarr, cfg.Arr.Radarr, cfg.Metadata.Timeout.D()*3, m.log)
+	rt.sonarr = arr.New(arr.Sonarr, cfg.Arr.Sonarr, cfg.Metadata.Timeout.D()*3, m.log)
 	if rt.provider == nil {
-		rt.provider = metadata.NoneProvider{}
-		if cfg.Metadata.Provider == "tmdb" {
-			if cfg.Metadata.TMDBAPIKey == "" {
-				m.log.Warn("metadata.tmdb_api_key not set; discs will not be identified")
-			} else {
-				t := metadata.NewTMDB(cfg.Metadata.TMDBAPIKey, cfg.Metadata.Language, cfg.Metadata.Timeout.D())
-				t.Logger = m.log
-				rt.provider = t
-			}
-		}
+		rt.provider = m.provider(cfg, rt)
 	}
 	if rt.notifier == nil {
 		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log}
@@ -510,7 +545,11 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	title := displayTitle(job)
 	job.rt.notifier.Send(ctx, notify.Event{Type: "started", Drive: job.Drive, Label: job.Label, Title: title})
 
+	// Rip everything first so the disc can leave the drive as early as
+	// possible; identification, remuxing, delivery and the Radarr/Sonarr
+	// handoff do not need it.
 	job.set(func(j *Job) { j.Total = len(sel.Picks) })
+	files := make([]string, len(sel.Picks))
 	for i, pick := range sel.Picks {
 		if ctx.Err() != nil {
 			job.setStage(StageCancelled, "cancelled")
@@ -522,7 +561,27 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			m.fail(job, err)
 			return
 		}
-		file, err = m.postProcess(ctx, job, pick, file)
+		files[i] = file
+	}
+	if cfg.Eject.AfterRip && cfg.Eject.OnSuccess {
+		_ = d.Lock(false)
+		if err := d.Eject(); err != nil {
+			log.Warn("eject", "err", err)
+		} else {
+			job.set(func(j *Job) { j.Ejected = true })
+			job.logf("ejected")
+		}
+	}
+
+	m.ocrIdentify(ctx, job, disc, sel, files)
+
+	for i, pick := range sel.Picks {
+		if ctx.Err() != nil {
+			job.setStage(StageCancelled, "cancelled")
+			return
+		}
+		job.set(func(j *Job) { j.Current = i + 1 })
+		file, err := m.postProcess(ctx, job, pick, files[i])
 		if err != nil {
 			m.fail(job, err)
 			return
@@ -532,6 +591,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			return
 		}
 	}
+	m.arrHandoff(ctx, job)
 
 	job.setStage(StageDone, "done")
 	return false // the deferred finish sets the real value
@@ -570,8 +630,8 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			}
 		}
 		_ = os.RemoveAll(workDir)
-		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed)
-		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "done", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Outputs: outs, Elapsed: snap.Elapsed})
+		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
+		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "done", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Outputs: outs, Elapsed: snap.Elapsed, Error: strings.Join(snap.Warnings, "; ")})
 	case StageFailed, StageCancelled:
 		if !cfg.Output.KeepWorkspaceOnError {
 			_ = os.RemoveAll(workDir)
@@ -588,6 +648,9 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	}
 
 	_ = d.Lock(false)
+	if snap.Ejected {
+		return true
+	}
 	eject := (snap.Stage == StageDone || snap.Stage == StageSkipped) && cfg.Eject.OnSuccess ||
 		(snap.Stage == StageFailed || snap.Stage == StageCancelled) && cfg.Eject.OnFailure
 	if eject {
@@ -915,6 +978,10 @@ func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 	}
 	if ext := filepath.Ext(file); ext != "" && !strings.EqualFold(filepath.Ext(rel), ext) {
 		rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + ext
+	}
+	if job.rt.arrFor(s.Identity) != nil {
+		// Radarr/Sonarr will move it into their own library layout.
+		sub = cfg.Arr.StagingSubdir
 	}
 	dest := filepath.Join(cfg.Output.Path, sub, rel)
 	if !cfg.Output.Overwrite {

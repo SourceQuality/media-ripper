@@ -54,7 +54,9 @@ makemkv:
   write_settings: true
 
 metadata:
-  provider: tmdb       # tmdb | none
+  # auto = TMDB when a key is set, then Radarr/Sonarr lookups when they are
+  # configured. tmdb | arr | none force one source.
+  provider: auto
   tmdb_api_key: ""
   language: en-US
   timeout: 20s
@@ -64,6 +66,19 @@ metadata:
   label_overrides: {}
   #  "BD_ROM_2": "Blade Runner 2049"
   #  "LOGICAL_VOLUME_ID": "Friends S1 D2"
+  # Second chance for discs with a useless label: after the rip, OCR the
+  # title card and credits of the longest file (tesseract) and search for
+  # the text. A match is accepted only when the runtime agrees. Needs
+  # tesseract-ocr and the language packs listed below.
+  ocr:
+    enabled: false
+    tesseract: tesseract
+    languages: eng          # tesseract codes, "eng+deu" for several
+    head_minutes: 8
+    tail_minutes: 4
+    frames_per_minute: 20
+    max_candidates: 8
+    timeout: 20m
 
 selection:
   # Audio/subtitle languages to keep (ISO 639-2 codes). Empty = keep every
@@ -109,8 +124,41 @@ postprocess:
   custom_extension: mkv
   timeout: 6h
 
+# Radarr / Sonarr handoff. When enabled for a kind, rips are delivered into
+# output.path/<staging_subdir> and the app is asked to import them; it then
+# renames and moves them into its own root folder and updates Plex/Jellyfin.
+# Titles not yet in the library are added first when add_missing is on.
+arr:
+  radarr:
+    enabled: false
+    url: http://radarr:7878
+    api_key: ""             # or MR_RADARR_API_KEY
+    root_folder: /movies    # Radarr's root folder (as Radarr sees it)
+    quality_profile: ""     # name or id; empty = first profile
+    add_missing: true
+    monitored: false
+    import_mode: move       # move | copy
+    # When Radarr runs elsewhere, map the staging path to its view of it.
+    path_map: {}
+    #  "/mnt/media/_incoming": "/data/incoming"
+  sonarr:
+    enabled: false
+    url: http://sonarr:8989
+    api_key: ""             # or MR_SONARR_API_KEY
+    root_folder: /tv
+    quality_profile: ""
+    add_missing: true
+    monitored: false
+    import_mode: move
+    path_map: {}
+  staging_subdir: _incoming
+  import_timeout: 10m
+
 eject:
   on_success: true
+  # Open the tray as soon as the last title is ripped, before remuxing,
+  # delivery and the Radarr/Sonarr import. The drive is free sooner.
+  after_rip: true
   on_failure: true
   close_tray_on_start: false
   # A disc that was ripped before is ejected without ripping. Set true to rip

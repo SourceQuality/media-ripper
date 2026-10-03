@@ -29,17 +29,53 @@ For each drive, in a loop:
    featurettes and menus are never ripped.
 5. **Rip** with MakeMKV. No re-encode. All audio and subtitle tracks are kept
    unless you restrict languages.
-6. **Remux** (optional, stream copy only) to set the file title and apply the
+6. **Eject** as soon as the last title is ripped and record the disc, so
+   reinserting it does not rip it twice. The rest happens with the drive
+   free.
+7. **Remux** (optional, stream copy only) to set the file title and apply the
    language filter, with mkvmerge or ffmpeg. A custom command slot is there
    if you ever want to transcode.
-7. **Deliver** to the library path using your naming template. Copies go
+8. **Deliver** to the library path using your naming template. Copies go
    through a `.part` file and are size-checked, so a network share never sees
-   a half-written file.
-8. **Eject** and record the disc, so reinserting it does not rip it twice.
+   a half-written file. With Radarr or Sonarr configured, the files go to a
+   staging folder instead and the app imports them (see below).
 
 A disc that cannot be identified is still ripped (longest title, or every
 episode-shaped title if it looks like a TV set) into `_unidentified/`, so a
-bad label never stops the machine.
+bad label never stops the machine. With OCR enabled it gets a second chance
+first (see below).
+
+## Radarr and Sonarr
+
+Enable `arr.radarr` and/or `arr.sonarr` with the URL and API key. Movies
+then go to `output.path/_incoming/` and media-ripper calls Radarr's
+`DownloadedMoviesScan`; TV goes the same way to Sonarr's
+`DownloadedEpisodesScan`. The app renames and moves the files into its own
+root folder with its own naming rules and refreshes Plex or Jellyfin. If
+the title is not in the library yet it is added first (unmonitored by
+default) using `root_folder` and `quality_profile`. When Radarr runs in a
+different container, `path_map` translates the staging path into what
+Radarr sees. If the import fails the files stay in `_incoming/` and the job
+shows a warning; the rip itself still counts as done.
+
+Radarr and Sonarr also work as a metadata source: with `metadata.provider:
+auto` their lookup endpoints are used after TMDB (or instead of it when no
+TMDB key is set), so a TMDB key is optional once an *arr app is configured.
+
+## Identifying discs with useless labels
+
+Many discs are labelled `BD_ROM` or `LOGICAL_VOLUME_ID`. Blu-rays usually
+carry a real title in their on-disc metadata, which MakeMKV reports and the
+pipeline already uses. Beyond that there is no audio or video fingerprint
+database for films, so the remaining signal is what is on screen.
+`metadata.ocr.enabled: true` samples frames from the first minutes and the
+end credits of the ripped file, runs tesseract on them, and searches the
+largest recurring text (the title card) on TMDB or Radarr/Sonarr. A match
+is only accepted when the title's runtime agrees with the length of what
+was ripped, which keeps studio logos and dialogue from producing wrong
+names. It runs after the disc has been ejected and costs a few minutes of
+CPU per unidentified disc. It needs `tesseract-ocr` and a language pack;
+the Docker image includes English.
 
 ## Install
 
@@ -89,7 +125,7 @@ the ones you must set:
 | key | what |
 | --- | --- |
 | `output.path` | library root, e.g. `/mnt/media` |
-| `metadata.tmdb_api_key` | free key from [themoviedb.org](https://www.themoviedb.org/settings/api); without it discs go to `_unidentified/` |
+| `metadata.tmdb_api_key` | free key from [themoviedb.org](https://www.themoviedb.org/settings/api); optional when Radarr/Sonarr are configured |
 | `makemkv.key` | your MakeMKV key (or the current beta key) |
 
 Useful knobs:
@@ -171,6 +207,8 @@ make build
 
 Layout: `cmd/media-ripper` (CLI), `internal/drive` (ioctls, label,
 fingerprint), `internal/makemkv` (robot-mode parser and runner),
-`internal/metadata` (label parsing, TMDB), `internal/selector` (title
-choice), `internal/naming`, `internal/postprocess`, `internal/pipeline`
-(the per-drive state machine), `internal/store`, `internal/web`.
+`internal/metadata` (label parsing, TMDB, *arr provider), `internal/arr`
+(Radarr/Sonarr client), `internal/ocr` (title-card recognition),
+`internal/selector` (title choice), `internal/naming`,
+`internal/postprocess`, `internal/pipeline` (the per-drive state machine),
+`internal/store`, `internal/web`.

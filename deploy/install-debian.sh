@@ -20,7 +20,7 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends \
-  ffmpeg mkvtoolnix eject ca-certificates curl \
+  ffmpeg mkvtoolnix eject tesseract-ocr tesseract-ocr-eng ca-certificates curl \
   build-essential pkg-config libc6-dev libssl-dev libexpat1-dev libavcodec-dev libgl1-mesa-dev zlib1g-dev
 
 # --- MakeMKV ---------------------------------------------------------------
