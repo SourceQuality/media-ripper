@@ -862,7 +862,7 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 			case <-time.After(10 * time.Second):
 			}
 		}
-		var lastPct float64 = -1
+		var plog progressLog
 		file, err := job.rt.mk.Rip(ctx, job.Drive, pick.Title, dir, func(p makemkv.Progress) {
 			job.set(func(j *Job) {
 				if p.Percent >= 0 {
@@ -876,8 +876,7 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 					j.Message = msg + " · " + p.Task
 				}
 			})
-			if p.Percent >= 0 && p.Percent-lastPct >= 10 {
-				lastPct = p.Percent
+			if plog.due(p) {
 				m.log.Info("rip progress", "drive", job.Drive, "job", job.ID, "pct", int(p.Percent), "eta", p.Remaining.Round(time.Second))
 			}
 		})
@@ -892,6 +891,29 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 		}
 	}
 	return "", fmt.Errorf("rip title %d: %w", pick.Title.ID, lastErr)
+}
+
+// progressLog throttles rip progress logging to one line per 10 points.
+// MakeMKV reports each phase of a rip (analysis, then saving) from 0 to 100,
+// so the threshold starts over when a new phase begins or the percentage
+// drops; otherwise the analysis phase reaching 100 silences the whole save.
+type progressLog struct {
+	last    float64
+	started bool
+}
+
+func (l *progressLog) due(p makemkv.Progress) bool {
+	if p.Task != "" {
+		l.started = false
+	}
+	if p.Percent < 0 {
+		return false
+	}
+	if !l.started || p.Percent < l.last || p.Percent-l.last >= 10 {
+		l.last, l.started = p.Percent, true
+		return true
+	}
+	return false
 }
 
 func (m *Manager) postProcess(ctx context.Context, job *Job, pick selector.Pick, file string) (string, error) {

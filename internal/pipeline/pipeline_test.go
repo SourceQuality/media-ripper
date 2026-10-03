@@ -419,3 +419,27 @@ func TestMoveFileAcrossCopy(t *testing.T) {
 		t.Fatal("temp file left behind")
 	}
 }
+
+func TestProgressLogRestartsPerPhase(t *testing.T) {
+	var l progressLog
+	steps := []struct {
+		p    makemkv.Progress
+		want bool
+	}{
+		{makemkv.Progress{Task: "Analyzing seamless segments", Percent: -1}, false},
+		{makemkv.Progress{Percent: 0}, true},
+		{makemkv.Progress{Percent: 5}, false},
+		{makemkv.Progress{Percent: 100}, true},
+		{makemkv.Progress{Task: "Saving to MKV file", Percent: -1}, false},
+		{makemkv.Progress{Percent: 0.4}, true},
+		{makemkv.Progress{Percent: 9}, false},
+		{makemkv.Progress{Percent: 10.5}, true},
+		{makemkv.Progress{Percent: 25}, true},
+		{makemkv.Progress{Percent: 3}, true}, // drop without a task line
+	}
+	for i, s := range steps {
+		if got := l.due(s.p); got != s.want {
+			t.Errorf("step %d (%+v): due = %v, want %v", i, s.p, got, s.want)
+		}
+	}
+}
