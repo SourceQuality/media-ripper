@@ -183,7 +183,7 @@ func setup(t *testing.T, infoText string, provider metadata.Provider) *env {
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	cfg.PollInterval = 20 * time.Millisecond // below the validated minimum, fine for tests
+	cfg.PollInterval = config.Duration(20 * time.Millisecond) // below the validated minimum, fine for tests
 	st, err := store.Open(cfg.StateDir())
 	if err != nil {
 		t.Fatal(err)
@@ -218,6 +218,18 @@ func (e *env) waitDone(t *testing.T) Job {
 	return Job{}
 }
 
+func (e *env) waitEject(t *testing.T, n int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.drv.ejectCount() >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected %d ejects, got %d", n, e.drv.ejectCount())
+}
+
 func TestMovieEndToEnd(t *testing.T) {
 	e := setup(t, movieInfo, fakeProvider{&metadata.Identity{Kind: metadata.KindMovie, Title: "The Matrix", Year: 1999, TMDBID: 603, Runtime: 136 * time.Minute, Confidence: 1, Source: "test"}})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -239,9 +251,7 @@ func TestMovieEndToEnd(t *testing.T) {
 	if j.Selection.Picks[0].Title.ID != 0 {
 		t.Fatalf("picked title %d", j.Selection.Picks[0].Title.ID)
 	}
-	if e.drv.ejectCount() != 1 {
-		t.Fatalf("ejected %d times", e.drv.ejectCount())
-	}
+	e.waitEject(t, 1)
 	if _, ok := e.st.Disc("fp-matrix"); !ok {
 		t.Fatal("disc not recorded")
 	}
@@ -260,12 +270,9 @@ func TestMovieEndToEnd(t *testing.T) {
 
 	// Same disc re-inserted after eject: skipped and ejected again, no new job.
 	e.drv.insert("fp-matrix", "THE_MATRIX")
-	time.Sleep(200 * time.Millisecond)
+	e.waitEject(t, 2)
 	if n := len(e.m.Snapshot().Recent); n != 1 {
 		t.Fatalf("re-ripped an already ripped disc: %d jobs", n)
-	}
-	if e.drv.ejectCount() != 2 {
-		t.Fatalf("expected second eject, got %d", e.drv.ejectCount())
 	}
 
 	// Rescan forces it.
@@ -360,9 +367,7 @@ func TestScanFailureEjectsAndRecords(t *testing.T) {
 	if j.Stage != StageFailed || !strings.Contains(j.Error, "Failed to open disc") {
 		t.Fatalf("job = %+v", j)
 	}
-	if e.drv.ejectCount() != 1 {
-		t.Fatalf("ejected %d", e.drv.ejectCount())
-	}
+	e.waitEject(t, 1)
 	if _, ok := e.st.Disc("fp-bad"); ok {
 		t.Fatal("failed disc must not be recorded as ripped")
 	}

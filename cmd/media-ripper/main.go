@@ -19,9 +19,7 @@ import (
 
 	"github.com/sourcequality/media-ripper/internal/config"
 	"github.com/sourcequality/media-ripper/internal/drive"
-	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
-	"github.com/sourcequality/media-ripper/internal/notify"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
 	"github.com/sourcequality/media-ripper/internal/web"
@@ -133,31 +131,7 @@ func build(cfgPath string) (*config.Config, *pipeline.Manager, *store.Store, *sl
 	if err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("open state: %w", err)
 	}
-	mk := &makemkv.Client{
-		Binary:      cfg.MakeMKV.Binary,
-		MinLength:   cfg.MakeMKV.MinLength,
-		ScanTimeout: cfg.MakeMKV.ScanTimeout,
-		RipTimeout:  cfg.MakeMKV.Timeout,
-		ExtraArgs:   cfg.MakeMKV.ExtraArgs,
-		Logger:      log,
-	}
-	if cfg.MakeMKV.WriteSettings {
-		if err := makemkv.WriteSettings(cfg.MakeMKV.SettingsDir, cfg.MakeMKV.Key, makemkv.SelectionString(cfg.Selection.Languages)); err != nil {
-			log.Warn("write makemkv settings", "err", err)
-		}
-	}
-	var provider metadata.Provider = metadata.NoneProvider{}
-	if cfg.Metadata.Provider == "tmdb" {
-		if cfg.Metadata.TMDBAPIKey == "" {
-			log.Warn("metadata.tmdb_api_key not set; discs will not be identified")
-		} else {
-			t := metadata.NewTMDB(cfg.Metadata.TMDBAPIKey, cfg.Metadata.Language, cfg.Metadata.Timeout)
-			t.Logger = log
-			provider = t
-		}
-	}
-	n := &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: log}
-	m := pipeline.New(pipeline.Deps{Config: cfg, MakeMKV: mk, Metadata: provider, Store: st, Notifier: n, Logger: log})
+	m := pipeline.New(pipeline.Deps{Config: cfg, Store: st, Logger: log})
 	return cfg, m, st, log, nil
 }
 
@@ -173,7 +147,7 @@ func runDaemon(cfgPath string) error {
 	defer stop()
 
 	if cfg.Web.Enabled {
-		srv := &web.Server{Manager: m, Store: st, Config: cfg, Version: version, Logger: log}
+		srv := &web.Server{Manager: m, Store: st, Version: version, Logger: log}
 		hs := &http.Server{Addr: cfg.Web.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 		ln, err := net.Listen("tcp", cfg.Web.Listen)
 		if err != nil {

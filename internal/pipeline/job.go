@@ -80,6 +80,7 @@ type Job struct {
 	Total     int                 `json:"total,omitempty"`   // number of picks
 
 	cancel func()
+	rt     *runtime
 }
 
 // TitleSummary is a compact view of a scanned title for the UI and history.
@@ -106,10 +107,11 @@ func summarize(d *makemkv.Disc) []TitleSummary {
 	return out
 }
 
-func newJob(drive string) *Job {
+func newJob(drive string, rt *runtime) *Job {
 	now := time.Now()
 	return &Job{
 		mu:        &sync.Mutex{},
+		rt:        rt,
 		ID:        now.Format("20060102-150405") + "-" + fmt.Sprintf("%03d", now.Nanosecond()/1e6),
 		Drive:     drive,
 		Stage:     StageQueued,

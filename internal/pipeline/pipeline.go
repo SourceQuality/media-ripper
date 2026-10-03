@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/config"
@@ -25,7 +26,9 @@ import (
 	"github.com/sourcequality/media-ripper/internal/store"
 )
 
-// Deps are the collaborators the pipeline needs.
+// Deps are the collaborators the pipeline needs. MakeMKV, Metadata and
+// Notifier are optional overrides (used by tests); when nil they are built
+// from the configuration and rebuilt whenever it changes.
 type Deps struct {
 	Config   *config.Config
 	MakeMKV  *makemkv.Client
@@ -37,10 +40,19 @@ type Deps struct {
 	OpenDrive func(path string) (drive.Drive, error)
 }
 
+// runtime is one immutable configuration generation with the components
+// built from it. Jobs capture the generation they started under.
+type runtime struct {
+	cfg      *config.Config
+	mk       *makemkv.Client
+	provider metadata.Provider
+	notifier *notify.Notifier
+}
+
 // Manager owns one runner per drive.
 type Manager struct {
 	deps    Deps
-	cfg     *config.Config
+	rt      atomic.Pointer[runtime]
 	log     *slog.Logger
 	runners []*runner
 	mu      sync.Mutex
@@ -56,22 +68,71 @@ func New(deps Deps) *Manager {
 	if deps.OpenDrive == nil {
 		deps.OpenDrive = drive.Open
 	}
-	if deps.Metadata == nil {
-		deps.Metadata = metadata.NoneProvider{}
+	m := &Manager{deps: deps, log: deps.Logger, started: time.Now()}
+	m.SetConfig(deps.Config)
+	return m
+}
+
+// Config returns the active configuration. Treat it as read-only.
+func (m *Manager) Config() *config.Config { return m.rt.Load().cfg }
+
+// SetConfig swaps in a new configuration. Jobs already running finish under
+// the old one. It returns the keys that need a restart to take effect.
+func (m *Manager) SetConfig(cfg *config.Config) []string {
+	var restart []string
+	if prev := m.rt.Load(); prev != nil {
+		restart = prev.cfg.NeedsRestart(cfg)
 	}
-	return &Manager{deps: deps, cfg: deps.Config, log: deps.Logger, started: time.Now()}
+	m.rt.Store(m.build(cfg))
+	if cfg.MakeMKV.WriteSettings {
+		if err := makemkv.WriteSettings(cfg.MakeMKV.SettingsDir, cfg.MakeMKV.Key, makemkv.SelectionString(cfg.Selection.Languages)); err != nil {
+			m.log.Warn("write makemkv settings", "err", err)
+		}
+	}
+	return restart
+}
+
+func (m *Manager) build(cfg *config.Config) *runtime {
+	rt := &runtime{cfg: cfg, mk: m.deps.MakeMKV, provider: m.deps.Metadata, notifier: m.deps.Notifier}
+	if rt.mk == nil {
+		rt.mk = &makemkv.Client{
+			Binary:      cfg.MakeMKV.Binary,
+			MinLength:   cfg.MakeMKV.MinLength,
+			ScanTimeout: cfg.MakeMKV.ScanTimeout.D(),
+			RipTimeout:  cfg.MakeMKV.Timeout.D(),
+			ExtraArgs:   cfg.MakeMKV.ExtraArgs,
+			Logger:      m.log,
+		}
+	}
+	if rt.provider == nil {
+		rt.provider = metadata.NoneProvider{}
+		if cfg.Metadata.Provider == "tmdb" {
+			if cfg.Metadata.TMDBAPIKey == "" {
+				m.log.Warn("metadata.tmdb_api_key not set; discs will not be identified")
+			} else {
+				t := metadata.NewTMDB(cfg.Metadata.TMDBAPIKey, cfg.Metadata.Language, cfg.Metadata.Timeout.D())
+				t.Logger = m.log
+				rt.provider = t
+			}
+		}
+	}
+	if rt.notifier == nil {
+		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log}
+	}
+	return rt
 }
 
 // Run blocks until ctx is cancelled, watching every configured drive.
 func (m *Manager) Run(ctx context.Context) error {
-	paths := m.cfg.Drives
+	cfg := m.Config()
+	paths := cfg.Drives
 	if len(paths) == 0 {
 		paths = drive.Discover()
 	}
 	if len(paths) == 0 {
 		m.log.Warn("no optical drives found; waiting for one to appear")
 	}
-	if err := os.MkdirAll(m.cfg.RipDir(), 0o775); err != nil {
+	if err := os.MkdirAll(cfg.RipDir(), 0o775); err != nil {
 		return err
 	}
 	m.cleanWorkspace()
@@ -97,7 +158,7 @@ func (m *Manager) Run(ctx context.Context) error {
 		startRunner(p)
 	}
 	// Hot-plug: when no drives were configured, keep discovering.
-	if len(m.cfg.Drives) == 0 {
+	if len(cfg.Drives) == 0 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -125,7 +186,8 @@ func (m *Manager) Run(ctx context.Context) error {
 // cleanWorkspace removes leftovers from rips interrupted by a crash or power
 // loss. Finished files were already moved out, so anything here is partial.
 func (m *Manager) cleanWorkspace() {
-	entries, err := os.ReadDir(m.cfg.RipDir())
+	ripDir := m.Config().RipDir()
+	entries, err := os.ReadDir(ripDir)
 	if err != nil {
 		return
 	}
@@ -133,7 +195,7 @@ func (m *Manager) cleanWorkspace() {
 		if !e.IsDir() || strings.HasSuffix(e.Name(), ".keep") {
 			continue
 		}
-		p := filepath.Join(m.cfg.RipDir(), e.Name())
+		p := filepath.Join(ripDir, e.Name())
 		m.log.Info("removing stale workspace", "path", p)
 		_ = os.RemoveAll(p)
 	}
@@ -296,7 +358,6 @@ func (r *runner) status() DriveStatus {
 }
 
 func (r *runner) loop(ctx context.Context) {
-	cfg := r.m.cfg
 	d, err := r.m.deps.OpenDrive(r.path)
 	if err != nil {
 		r.log.Error("cannot open drive", "err", err)
@@ -305,17 +366,17 @@ func (r *runner) loop(ctx context.Context) {
 		r.mu.Unlock()
 		return
 	}
-	if cfg.Eject.CloseTrayOnStart {
+	if r.m.Config().Eject.CloseTrayOnStart {
 		_ = d.CloseTray()
 	}
-	t := time.NewTicker(cfg.PollInterval)
-	defer t.Stop()
 	errCount := 0
 	for {
+		rt := r.m.rt.Load()
+		cfg := rt.cfg
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(cfg.PollInterval.D()):
 		}
 		st, err := d.Status()
 		if err != nil {
@@ -362,25 +423,33 @@ func (r *runner) loop(ctx context.Context) {
 		if !forced && !cfg.Eject.ReripSameDisc {
 			if rec, ok := r.m.deps.Store.Disc(fp); ok {
 				r.log.Info("disc already ripped; ejecting", "label", label, "ripped_at", rec.RippedAt.Format(time.RFC3339))
-				r.m.deps.Notifier.Send(ctx, notify.Event{Type: "skipped", Drive: r.path, Label: label, Title: rec.Title, Error: "already ripped"})
+				rt.notifier.Send(ctx, notify.Event{Type: "skipped", Drive: r.path, Label: label, Title: rec.Title, Error: "already ripped"})
 				r.mu.Lock()
 				r.ignored = true
-				r.mu.Unlock()
 				if cfg.Eject.OnSuccess {
 					_ = d.Eject()
+					// The tray is open; whatever comes next is a new insertion.
+					r.handled = ""
 				}
+				r.mu.Unlock()
 				continue
 			}
 		}
 
-		job := newJob(r.path)
+		job := newJob(r.path, rt)
 		job.Fingerprint = fp
 		job.Label = label
 		r.mu.Lock()
 		r.job = job
 		r.mu.Unlock()
 		r.m.remember(job)
-		r.m.runJob(ctx, d, job)
+		if r.m.runJob(ctx, d, job) {
+			// We ejected, so the next disc-ok is a fresh insertion even if it
+			// arrives before we observe the open tray.
+			r.mu.Lock()
+			r.handled = ""
+			r.mu.Unlock()
+		}
 	}
 }
 
@@ -393,7 +462,7 @@ func (m *Manager) ScanOnly(ctx context.Context, path string) (*Job, error) {
 	if err != nil {
 		return nil, err
 	}
-	job := newJob(path)
+	job := newJob(path, m.rt.Load())
 	job.DryRun = true
 	if fp, label, err := d.Fingerprint(); err == nil {
 		job.Fingerprint, job.Label = fp, label
@@ -402,8 +471,10 @@ func (m *Manager) ScanOnly(ctx context.Context, path string) (*Job, error) {
 	return job, err
 }
 
-func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) {
-	cfg := m.cfg
+// runJob drives one disc through the pipeline and reports whether the disc
+// was ejected afterwards.
+func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected bool) {
+	cfg := job.rt.cfg
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	job.set(func(j *Job) { j.cancel = cancel })
@@ -415,7 +486,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) {
 			job.set(func(j *Job) { j.Error = fmt.Sprintf("internal error: %v", rec) })
 			job.setStage(StageFailed, "internal error")
 		}
-		m.finish(ctx, d, job)
+		ejected = m.finish(ctx, d, job)
 	}()
 
 	_ = d.Lock(true)
@@ -437,7 +508,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) {
 		return
 	}
 	title := displayTitle(job)
-	m.deps.Notifier.Send(ctx, notify.Event{Type: "started", Drive: job.Drive, Label: job.Label, Title: title})
+	job.rt.notifier.Send(ctx, notify.Event{Type: "started", Drive: job.Drive, Label: job.Label, Title: title})
 
 	job.set(func(j *Job) { j.Total = len(sel.Picks) })
 	for i, pick := range sel.Picks {
@@ -463,6 +534,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) {
 	}
 
 	job.setStage(StageDone, "done")
+	return false // the deferred finish sets the real value
 }
 
 func (m *Manager) fail(job *Job, err error) {
@@ -476,8 +548,9 @@ func (m *Manager) fail(job *Job, err error) {
 }
 
 // finish runs after every job: history, state, notifications, cleanup, eject.
-func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) {
-	cfg := m.cfg
+// It reports whether the disc was ejected.
+func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
+	cfg := job.rt.cfg
 	snap := job.Snapshot()
 	log := m.log.With("drive", job.Drive, "job", job.ID)
 	workDir := filepath.Join(cfg.RipDir(), job.ID)
@@ -498,17 +571,17 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) {
 		}
 		_ = os.RemoveAll(workDir)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed)
-		m.deps.Notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "done", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Outputs: outs, Elapsed: snap.Elapsed})
+		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "done", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Outputs: outs, Elapsed: snap.Elapsed})
 	case StageFailed, StageCancelled:
 		if !cfg.Output.KeepWorkspaceOnError {
 			_ = os.RemoveAll(workDir)
 		}
 		log.Error("job "+string(snap.Stage), "title", displayTitle(job), "err", snap.Error)
-		m.deps.Notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "failed", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Error: snap.Error, Elapsed: snap.Elapsed})
+		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "failed", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Error: snap.Error, Elapsed: snap.Elapsed})
 	case StageSkipped:
 		_ = os.RemoveAll(workDir)
 		log.Info("skipped", "label", snap.Label)
-		m.deps.Notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "skipped", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Error: snap.Message})
+		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "skipped", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Error: snap.Message})
 	}
 	if err := m.deps.Store.AppendHistory(historyRecord(snap)); err != nil {
 		log.Warn("write history", "err", err)
@@ -520,8 +593,10 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) {
 	if eject {
 		if err := d.Eject(); err != nil {
 			log.Warn("eject", "err", err)
+			return false
 		}
 	}
+	return eject
 }
 
 type historyEntry struct {
@@ -580,7 +655,7 @@ func seriesKey(id *metadata.Identity) string {
 
 // scanIdentifySelect runs the three decision stages and fills the job.
 func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Disc, *selector.Selection, error) {
-	cfg := m.cfg
+	cfg := job.rt.cfg
 	log := m.log.With("drive", job.Drive, "job", job.ID)
 
 	// 1. Scan.
@@ -596,7 +671,7 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 			case <-time.After(5 * time.Second):
 			}
 		}
-		disc, err = m.deps.MakeMKV.Info(ctx, job.Drive)
+		disc, err = job.rt.mk.Info(ctx, job.Drive)
 		if err == nil {
 			break
 		}
@@ -623,8 +698,8 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 	job.setStage(StageIdentifying, "looking up "+label)
 	hint := metadata.ParseLabel(applyOverride(cfg, label))
 	job.logf("label %q → query %q year=%d season=%d disc=%d", label, hint.Query, hint.Year, hint.Season, hint.Disc)
-	ictx, icancel := context.WithTimeout(ctx, maxDur(cfg.Metadata.Timeout*4, time.Minute))
-	id, err := m.deps.Metadata.Identify(ictx, hint, selector.DiscHints(disc))
+	ictx, icancel := context.WithTimeout(ctx, maxDur(cfg.Metadata.Timeout.D()*4, time.Minute))
+	id, err := job.rt.provider.Identify(ictx, hint, selector.DiscHints(disc))
 	icancel()
 	if err != nil {
 		log.Warn("identify", "err", err)
@@ -649,10 +724,10 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 	// 3. Select.
 	job.setStage(StageSelecting, "choosing titles")
 	opts := selector.Options{
-		MovieRuntimeTolerance: cfg.Selection.MovieRuntimeTolerance,
+		MovieRuntimeTolerance: cfg.Selection.MovieRuntimeTolerance.D(),
 		TVEpisodeTolerance:    cfg.Selection.TVEpisodeTolerance,
-		MinMovieDuration:      cfg.Selection.MinMovieDuration,
-		MinEpisodeDuration:    cfg.Selection.MinEpisodeDuration,
+		MinMovieDuration:      cfg.Selection.MinMovieDuration.D(),
+		MinEpisodeDuration:    cfg.Selection.MinEpisodeDuration.D(),
 		UnidentifiedStrategy:  cfg.Selection.UnidentifiedStrategy,
 		AllowDoubleEpisodes:   cfg.Selection.AllowDoubleEpisodes,
 	}
@@ -699,7 +774,7 @@ func maxDur(a, b time.Duration) time.Duration {
 }
 
 func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, workDir string, idx, total int) (string, error) {
-	cfg := m.cfg
+	cfg := job.rt.cfg
 	what := fmt.Sprintf("title %d", pick.Title.ID)
 	if pick.Episode > 0 {
 		what = fmt.Sprintf("S%02dE%02d", pick.Season, pick.Episode)
@@ -725,7 +800,7 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 			}
 		}
 		var lastPct float64 = -1
-		file, err := m.deps.MakeMKV.Rip(ctx, job.Drive, pick.Title, dir, func(p makemkv.Progress) {
+		file, err := job.rt.mk.Rip(ctx, job.Drive, pick.Title, dir, func(p makemkv.Progress) {
 			job.set(func(j *Job) {
 				if p.Percent >= 0 {
 					j.Progress = p.Percent
@@ -757,7 +832,7 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 }
 
 func (m *Manager) postProcess(ctx context.Context, job *Job, pick selector.Pick, file string) (string, error) {
-	cfg := m.cfg
+	cfg := job.rt.cfg
 	if cfg.PostProcess.Mode == "none" {
 		return file, nil
 	}
@@ -769,7 +844,7 @@ func (m *Manager) postProcess(ctx context.Context, job *Job, pick selector.Pick,
 		SetTitle:      cfg.PostProcess.SetTitle,
 		CustomCommand: cfg.PostProcess.CustomCommand,
 		CustomExt:     cfg.PostProcess.CustomExt,
-		Timeout:       cfg.PostProcess.Timeout,
+		Timeout:       cfg.PostProcess.Timeout.D(),
 		Logger:        m.log,
 	})
 	if err != nil {
@@ -802,7 +877,7 @@ func mkvTitle(job *Job, pick selector.Pick) string {
 }
 
 func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, file string) error {
-	cfg := m.cfg
+	cfg := job.rt.cfg
 	job.setStage(StageDelivering, "copying to library")
 	s := job.Snapshot()
 	vars := naming.Vars{Label: s.Label, TitleID: pick.Title.ID, Date: s.StartedAt}

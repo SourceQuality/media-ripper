@@ -11,118 +11,172 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
 
+// Duration is a time.Duration that reads and writes as "8m" or "6h" in YAML
+// and JSON.
+type Duration time.Duration
+
+// D returns the plain time.Duration.
+func (d Duration) D() time.Duration { return time.Duration(d) }
+
+func (d Duration) String() string { return time.Duration(d).String() }
+
+// MarshalText implements encoding.TextMarshaler.
+func (d Duration) MarshalText() ([]byte, error) { return []byte(time.Duration(d).String()), nil }
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (d *Duration) UnmarshalText(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "" {
+		*d = 0
+		return nil
+	}
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q", s)
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// Mode is a file permission that reads and writes as octal text ("0775").
+type Mode uint32
+
+// MarshalText implements encoding.TextMarshaler.
+func (m Mode) MarshalText() ([]byte, error) { return []byte(fmt.Sprintf("%04o", uint32(m))), nil }
+
+// UnmarshalText implements encoding.TextUnmarshaler.
+func (m *Mode) UnmarshalText(b []byte) error {
+	s := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(string(b)), "0o"), "0O")
+	if s == "" {
+		return fmt.Errorf("mode is required")
+	}
+	v, err := strconv.ParseUint(s, 8, 32)
+	if err != nil || v > 0o7777 {
+		return fmt.Errorf("invalid mode %q (use octal such as 0775)", string(b))
+	}
+	*m = Mode(v)
+	return nil
+}
+
 // Config is the top-level configuration document.
 type Config struct {
-	Drives       []string      `yaml:"drives"`
-	PollInterval time.Duration `yaml:"poll_interval"`
-	Workspace    string        `yaml:"workspace"`
+	// Path is the file the config was loaded from (empty when none).
+	Path string `yaml:"-" json:"-"`
+	// EnvOverrides lists dotted keys that came from the environment and
+	// therefore win over the file on every start.
+	EnvOverrides []string `yaml:"-" json:"-"`
 
-	Output      Output      `yaml:"output"`
-	MakeMKV     MakeMKV     `yaml:"makemkv"`
-	Metadata    Metadata    `yaml:"metadata"`
-	Selection   Selection   `yaml:"selection"`
-	PostProcess PostProcess `yaml:"postprocess"`
-	Eject       Eject       `yaml:"eject"`
-	Web         Web         `yaml:"web"`
-	Notify      Notify      `yaml:"notify"`
-	Log         Log         `yaml:"log"`
+	Drives       []string `yaml:"drives" json:"drives"`
+	PollInterval Duration `yaml:"poll_interval" json:"poll_interval"`
+	Workspace    string   `yaml:"workspace" json:"workspace"`
+
+	Output      Output      `yaml:"output" json:"output"`
+	MakeMKV     MakeMKV     `yaml:"makemkv" json:"makemkv"`
+	Metadata    Metadata    `yaml:"metadata" json:"metadata"`
+	Selection   Selection   `yaml:"selection" json:"selection"`
+	PostProcess PostProcess `yaml:"postprocess" json:"postprocess"`
+	Eject       Eject       `yaml:"eject" json:"eject"`
+	Web         Web         `yaml:"web" json:"web"`
+	Notify      Notify      `yaml:"notify" json:"notify"`
+	Log         Log         `yaml:"log" json:"log"`
 }
 
 // Output controls where finished files land and how they are named.
 type Output struct {
-	Path                 string `yaml:"path"`
-	MoviesSubdir         string `yaml:"movies_subdir"`
-	TVSubdir             string `yaml:"tv_subdir"`
-	UnidentifiedDir      string `yaml:"unidentified_subdir"`
-	MovieTemplate        string `yaml:"movie_template"`
-	TVTemplate           string `yaml:"tv_template"`
-	UnknownTemplate      string `yaml:"unidentified_template"`
-	Overwrite            bool   `yaml:"overwrite"`
-	DirMode              uint32 `yaml:"dir_mode"`
-	FileMode             uint32 `yaml:"file_mode"`
-	KeepWorkspaceOnError bool   `yaml:"keep_workspace_on_error"`
+	Path                 string `yaml:"path" json:"path"`
+	MoviesSubdir         string `yaml:"movies_subdir" json:"movies_subdir"`
+	TVSubdir             string `yaml:"tv_subdir" json:"tv_subdir"`
+	UnidentifiedDir      string `yaml:"unidentified_subdir" json:"unidentified_subdir"`
+	MovieTemplate        string `yaml:"movie_template" json:"movie_template"`
+	TVTemplate           string `yaml:"tv_template" json:"tv_template"`
+	UnknownTemplate      string `yaml:"unidentified_template" json:"unidentified_template"`
+	Overwrite            bool   `yaml:"overwrite" json:"overwrite"`
+	DirMode              Mode   `yaml:"dir_mode" json:"dir_mode"`
+	FileMode             Mode   `yaml:"file_mode" json:"file_mode"`
+	KeepWorkspaceOnError bool   `yaml:"keep_workspace_on_error" json:"keep_workspace_on_error"`
 }
 
 // MakeMKV configures the makemkvcon invocation.
 type MakeMKV struct {
-	Binary        string        `yaml:"binary"`
-	Key           string        `yaml:"key"`
-	MinLength     int           `yaml:"min_length"`
-	Timeout       time.Duration `yaml:"timeout"`
-	ScanTimeout   time.Duration `yaml:"scan_timeout"`
-	Retries       int           `yaml:"retries"`
-	ExtraArgs     []string      `yaml:"extra_args"`
-	SettingsDir   string        `yaml:"settings_dir"`
-	WriteSettings bool          `yaml:"write_settings"`
+	Binary        string   `yaml:"binary" json:"binary"`
+	Key           string   `yaml:"key" json:"key"`
+	MinLength     int      `yaml:"min_length" json:"min_length"`
+	Timeout       Duration `yaml:"timeout" json:"timeout"`
+	ScanTimeout   Duration `yaml:"scan_timeout" json:"scan_timeout"`
+	Retries       int      `yaml:"retries" json:"retries"`
+	ExtraArgs     []string `yaml:"extra_args" json:"extra_args"`
+	SettingsDir   string   `yaml:"settings_dir" json:"settings_dir"`
+	WriteSettings bool     `yaml:"write_settings" json:"write_settings"`
 }
 
 // Metadata configures disc identification.
 type Metadata struct {
-	Provider       string            `yaml:"provider"`
-	TMDBAPIKey     string            `yaml:"tmdb_api_key"`
-	Language       string            `yaml:"language"`
-	Timeout        time.Duration     `yaml:"timeout"`
-	LabelOverrides map[string]string `yaml:"label_overrides"`
+	Provider       string            `yaml:"provider" json:"provider"`
+	TMDBAPIKey     string            `yaml:"tmdb_api_key" json:"tmdb_api_key"`
+	Language       string            `yaml:"language" json:"language"`
+	Timeout        Duration          `yaml:"timeout" json:"timeout"`
+	LabelOverrides map[string]string `yaml:"label_overrides" json:"label_overrides"`
 }
 
 // Selection tunes how titles are matched to the movie or episodes.
 type Selection struct {
-	Languages             []string      `yaml:"languages"`
-	MovieRuntimeTolerance time.Duration `yaml:"movie_runtime_tolerance"`
-	TVEpisodeTolerance    float64       `yaml:"tv_episode_tolerance"`
-	MinMovieDuration      time.Duration `yaml:"min_movie_duration"`
-	MinEpisodeDuration    time.Duration `yaml:"min_episode_duration"`
-	UnidentifiedStrategy  string        `yaml:"unidentified_strategy"`
-	AllowDoubleEpisodes   bool          `yaml:"allow_double_episodes"`
+	Languages             []string `yaml:"languages" json:"languages"`
+	MovieRuntimeTolerance Duration `yaml:"movie_runtime_tolerance" json:"movie_runtime_tolerance"`
+	TVEpisodeTolerance    float64  `yaml:"tv_episode_tolerance" json:"tv_episode_tolerance"`
+	MinMovieDuration      Duration `yaml:"min_movie_duration" json:"min_movie_duration"`
+	MinEpisodeDuration    Duration `yaml:"min_episode_duration" json:"min_episode_duration"`
+	UnidentifiedStrategy  string   `yaml:"unidentified_strategy" json:"unidentified_strategy"`
+	AllowDoubleEpisodes   bool     `yaml:"allow_double_episodes" json:"allow_double_episodes"`
 }
 
 // PostProcess controls the optional pass after MakeMKV has written the MKV.
 type PostProcess struct {
-	Mode          string        `yaml:"mode"`
-	Tool          string        `yaml:"tool"`
-	SetTitle      bool          `yaml:"set_title"`
-	CustomCommand []string      `yaml:"custom_command"`
-	CustomExt     string        `yaml:"custom_extension"`
-	Timeout       time.Duration `yaml:"timeout"`
+	Mode          string   `yaml:"mode" json:"mode"`
+	Tool          string   `yaml:"tool" json:"tool"`
+	SetTitle      bool     `yaml:"set_title" json:"set_title"`
+	CustomCommand []string `yaml:"custom_command" json:"custom_command"`
+	CustomExt     string   `yaml:"custom_extension" json:"custom_extension"`
+	Timeout       Duration `yaml:"timeout" json:"timeout"`
 }
 
 // Eject controls tray behaviour.
 type Eject struct {
-	OnSuccess        bool `yaml:"on_success"`
-	OnFailure        bool `yaml:"on_failure"`
-	CloseTrayOnStart bool `yaml:"close_tray_on_start"`
-	ReripSameDisc    bool `yaml:"rerip_same_disc"`
+	OnSuccess        bool `yaml:"on_success" json:"on_success"`
+	OnFailure        bool `yaml:"on_failure" json:"on_failure"`
+	CloseTrayOnStart bool `yaml:"close_tray_on_start" json:"close_tray_on_start"`
+	ReripSameDisc    bool `yaml:"rerip_same_disc" json:"rerip_same_disc"`
 }
 
 // Web configures the embedded status UI and API.
 type Web struct {
-	Listen  string `yaml:"listen"`
-	Enabled bool   `yaml:"enabled"`
+	Listen  string `yaml:"listen" json:"listen"`
+	Enabled bool   `yaml:"enabled" json:"enabled"`
 }
 
 // Notify configures completion/failure notifications.
 type Notify struct {
-	WebhookURL string `yaml:"webhook_url"`
-	NtfyURL    string `yaml:"ntfy_url"`
-	NtfyToken  string `yaml:"ntfy_token"`
+	WebhookURL string `yaml:"webhook_url" json:"webhook_url"`
+	NtfyURL    string `yaml:"ntfy_url" json:"ntfy_url"`
+	NtfyToken  string `yaml:"ntfy_token" json:"ntfy_token"`
 }
 
 // Log configures logging.
 type Log struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
+	Level  string `yaml:"level" json:"level"`
+	Format string `yaml:"format" json:"format"`
 }
 
 // Default returns the built-in defaults. Only output.path is mandatory.
 func Default() Config {
 	return Config{
-		PollInterval: 3 * time.Second,
+		PollInterval: Duration(3 * time.Second),
 		Workspace:    "/var/lib/media-ripper",
 		Output: Output{
 			MoviesSubdir:    "Movies",
@@ -137,21 +191,21 @@ func Default() Config {
 		MakeMKV: MakeMKV{
 			Binary:        "makemkvcon",
 			MinLength:     120,
-			Timeout:       6 * time.Hour,
-			ScanTimeout:   20 * time.Minute,
+			Timeout:       Duration(6 * time.Hour),
+			ScanTimeout:   Duration(20 * time.Minute),
 			Retries:       1,
 			WriteSettings: true,
 		},
 		Metadata: Metadata{
 			Provider: "tmdb",
 			Language: "en-US",
-			Timeout:  20 * time.Second,
+			Timeout:  Duration(20 * time.Second),
 		},
 		Selection: Selection{
-			MovieRuntimeTolerance: 8 * time.Minute,
+			MovieRuntimeTolerance: Duration(8 * time.Minute),
 			TVEpisodeTolerance:    0.35,
-			MinMovieDuration:      40 * time.Minute,
-			MinEpisodeDuration:    8 * time.Minute,
+			MinMovieDuration:      Duration(40 * time.Minute),
+			MinEpisodeDuration:    Duration(8 * time.Minute),
 			UnidentifiedStrategy:  "longest",
 			AllowDoubleEpisodes:   true,
 		},
@@ -160,7 +214,7 @@ func Default() Config {
 			Tool:      "auto",
 			SetTitle:  true,
 			CustomExt: "mkv",
-			Timeout:   6 * time.Hour,
+			Timeout:   Duration(6 * time.Hour),
 		},
 		Eject: Eject{
 			OnSuccess: true,
@@ -189,6 +243,7 @@ func Load(path string) (*Config, error) {
 			return nil, fmt.Errorf("parse config %s: %w", path, err)
 		}
 	}
+	cfg.Path = path
 	applyEnv(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -196,23 +251,120 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-func applyEnv(cfg *Config) {
-	set := func(key string, dst *string) {
-		if v, ok := os.LookupEnv(key); ok && v != "" {
-			*dst = v
+// Save writes the configuration as YAML to path (or c.Path), atomically.
+// Comments in a hand-written file are not preserved.
+func (c *Config) Save(path string) error {
+	if path == "" {
+		path = c.Path
+	}
+	if path == "" {
+		return errors.New("no config file path")
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		return err
+	}
+	header := "# media-ripper configuration. Written by the settings page; see\n# config.example.yaml for a documented version of every key.\n"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append([]byte(header), data...), 0o640); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	c.Path = path
+	return nil
+}
+
+// DefaultPath is where Save writes when no file was loaded.
+func DefaultPath() string {
+	if p := os.Getenv("MR_CONFIG"); p != "" {
+		return p
+	}
+	return "/etc/media-ripper/config.yaml"
+}
+
+// KeepEnvOverrides copies values that the environment set in prev back into
+// c and carries the override list forward.
+func (c *Config) KeepEnvOverrides(prev *Config) {
+	c.EnvOverrides = prev.EnvOverrides
+	for _, k := range prev.EnvOverrides {
+		switch k {
+		case "drives":
+			c.Drives = prev.Drives
+		case "output.path":
+			c.Output.Path = prev.Output.Path
+		case "workspace":
+			c.Workspace = prev.Workspace
+		case "metadata.tmdb_api_key":
+			c.Metadata.TMDBAPIKey = prev.Metadata.TMDBAPIKey
+		case "makemkv.key":
+			c.MakeMKV.Key = prev.MakeMKV.Key
+		case "makemkv.binary":
+			c.MakeMKV.Binary = prev.MakeMKV.Binary
+		case "web.listen":
+			c.Web.Listen = prev.Web.Listen
+		case "log.level":
+			c.Log.Level = prev.Log.Level
+		case "notify.ntfy_url":
+			c.Notify.NtfyURL = prev.Notify.NtfyURL
+		case "notify.ntfy_token":
+			c.Notify.NtfyToken = prev.Notify.NtfyToken
+		case "notify.webhook_url":
+			c.Notify.WebhookURL = prev.Notify.WebhookURL
 		}
 	}
-	set("MR_OUTPUT_PATH", &cfg.Output.Path)
-	set("MR_WORKSPACE", &cfg.Workspace)
-	set("MR_TMDB_API_KEY", &cfg.Metadata.TMDBAPIKey)
-	set("MR_MAKEMKV_KEY", &cfg.MakeMKV.Key)
-	set("MR_MAKEMKV_BINARY", &cfg.MakeMKV.Binary)
-	set("MR_WEB_LISTEN", &cfg.Web.Listen)
-	set("MR_LOG_LEVEL", &cfg.Log.Level)
-	set("MR_NTFY_URL", &cfg.Notify.NtfyURL)
-	set("MR_NTFY_TOKEN", &cfg.Notify.NtfyToken)
-	set("MR_WEBHOOK_URL", &cfg.Notify.WebhookURL)
+}
+
+// NeedsRestart lists the dotted keys whose change cannot be applied to a
+// running daemon.
+func (c *Config) NeedsRestart(next *Config) []string {
+	var out []string
+	if strings.Join(c.Drives, ",") != strings.Join(next.Drives, ",") {
+		out = append(out, "drives")
+	}
+	if c.Workspace != next.Workspace {
+		out = append(out, "workspace")
+	}
+	if c.Web.Listen != next.Web.Listen {
+		out = append(out, "web.listen")
+	}
+	if c.Web.Enabled != next.Web.Enabled {
+		out = append(out, "web.enabled")
+	}
+	if c.Log != next.Log {
+		out = append(out, "log")
+	}
+	return out
+}
+
+func applyEnv(cfg *Config) {
+	cfg.EnvOverrides = nil
+	set := func(key, dotted string, dst *string) {
+		if v, ok := os.LookupEnv(key); ok && v != "" {
+			*dst = v
+			cfg.EnvOverrides = append(cfg.EnvOverrides, dotted)
+		}
+	}
+	set("MR_OUTPUT_PATH", "output.path", &cfg.Output.Path)
+	set("MR_WORKSPACE", "workspace", &cfg.Workspace)
+	set("MR_TMDB_API_KEY", "metadata.tmdb_api_key", &cfg.Metadata.TMDBAPIKey)
+	set("MR_MAKEMKV_KEY", "makemkv.key", &cfg.MakeMKV.Key)
+	set("MR_MAKEMKV_BINARY", "makemkv.binary", &cfg.MakeMKV.Binary)
+	set("MR_WEB_LISTEN", "web.listen", &cfg.Web.Listen)
+	set("MR_LOG_LEVEL", "log.level", &cfg.Log.Level)
+	set("MR_NTFY_URL", "notify.ntfy_url", &cfg.Notify.NtfyURL)
+	set("MR_NTFY_TOKEN", "notify.ntfy_token", &cfg.Notify.NtfyToken)
+	set("MR_WEBHOOK_URL", "notify.webhook_url", &cfg.Notify.WebhookURL)
 	if v := os.Getenv("MR_DRIVES"); v != "" {
+		cfg.EnvOverrides = append(cfg.EnvOverrides, "drives")
 		cfg.Drives = nil
 		for _, d := range strings.Split(v, ",") {
 			if d = strings.TrimSpace(d); d != "" {
@@ -232,7 +384,7 @@ func (c *Config) Validate() error {
 	if c.Workspace == "" {
 		errs = append(errs, errors.New("workspace is required"))
 	}
-	if c.PollInterval < 500*time.Millisecond {
+	if c.PollInterval.D() < 500*time.Millisecond {
 		errs = append(errs, errors.New("poll_interval must be at least 500ms"))
 	}
 	switch c.PostProcess.Mode {
@@ -280,16 +432,49 @@ func (c *Config) RipDir() string { return filepath.Join(c.Workspace, "rips") }
 // StateDir holds history and series progress.
 func (c *Config) StateDir() string { return filepath.Join(c.Workspace, "state") }
 
-// Redacted returns a copy with secrets blanked, for display in the UI.
-func (c Config) Redacted() Config {
-	if c.MakeMKV.Key != "" {
-		c.MakeMKV.Key = "••••"
+// SecretKeys are the dotted keys whose values never leave the server.
+var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token"}
+
+func (c *Config) secret(key string) *string {
+	switch key {
+	case "makemkv.key":
+		return &c.MakeMKV.Key
+	case "metadata.tmdb_api_key":
+		return &c.Metadata.TMDBAPIKey
+	case "notify.ntfy_token":
+		return &c.Notify.NtfyToken
 	}
-	if c.Metadata.TMDBAPIKey != "" {
-		c.Metadata.TMDBAPIKey = "••••"
+	return nil
+}
+
+// Redacted returns a copy with secrets blanked and a map of which secrets
+// are set, for the UI.
+func (c Config) Redacted() (Config, map[string]bool) {
+	set := map[string]bool{}
+	cp := c
+	for _, k := range SecretKeys {
+		p := cp.secret(k)
+		set[k] = *p != ""
+		*p = ""
 	}
-	if c.Notify.NtfyToken != "" {
-		c.Notify.NtfyToken = "••••"
+	return cp, set
+}
+
+// MergeSecrets copies secrets from prev into c where c has none, except for
+// keys listed in clear. A settings form never sends secrets back, so an
+// empty value means "keep".
+func (c *Config) MergeSecrets(prev *Config, clear []string) {
+	cleared := map[string]bool{}
+	for _, k := range clear {
+		cleared[k] = true
 	}
-	return c
+	for _, k := range SecretKeys {
+		if cleared[k] {
+			*c.secret(k) = ""
+			continue
+		}
+		if *c.secret(k) == "" {
+			*c.secret(k) = *prev.secret(k)
+		}
+	}
 }

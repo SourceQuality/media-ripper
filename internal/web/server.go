@@ -2,6 +2,7 @@
 package web
 
 import (
+	"bytes"
 	"embed"
 	"encoding/json"
 	"io/fs"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/config"
@@ -23,9 +25,11 @@ var uiFS embed.FS
 type Server struct {
 	Manager *pipeline.Manager
 	Store   *store.Store
-	Config  *config.Config
 	Version string
 	Logger  *slog.Logger
+
+	mu              sync.Mutex
+	restartRequired []string
 }
 
 // Handler builds the mux.
@@ -40,7 +44,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/history", s.history)
 	mux.HandleFunc("GET /api/series", s.series)
-	mux.HandleFunc("GET /api/config", s.config)
+	mux.HandleFunc("GET /api/config", s.getConfig)
+	mux.HandleFunc("PUT /api/config", s.putConfig)
 	mux.HandleFunc("GET /api/jobs/{id}", s.job)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancel)
 	mux.HandleFunc("POST /api/drives/{drive}/eject", s.eject)
@@ -103,8 +108,90 @@ func (s *Server) series(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.Store.Series())
 }
 
-func (s *Server) config(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.Config.Redacted())
+// configResponse is what the settings page works with. Secrets never leave
+// the server; "secrets" says which are set so the form can show that.
+type configResponse struct {
+	Config          config.Config   `json:"config"`
+	Secrets         map[string]bool `json:"secrets"`
+	Env             []string        `json:"env"`
+	Path            string          `json:"path"`
+	RestartRequired []string        `json:"restart_required"`
+}
+
+func (s *Server) configView() configResponse {
+	cfg := s.Manager.Config()
+	red, secrets := cfg.Redacted()
+	s.mu.Lock()
+	restart := append([]string(nil), s.restartRequired...)
+	s.mu.Unlock()
+	env := cfg.EnvOverrides
+	if env == nil {
+		env = []string{}
+	}
+	if restart == nil {
+		restart = []string{}
+	}
+	return configResponse{Config: red, Secrets: secrets, Env: env, Path: cfg.Path, RestartRequired: restart}
+}
+
+func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.configView())
+}
+
+// putConfig validates, saves and applies a full configuration. Keys set by
+// the environment keep their current values because the environment would
+// win again on the next start.
+func (s *Server) putConfig(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Config       json.RawMessage `json:"config"`
+		ClearSecrets []string        `json:"clear_secrets"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	prev := s.Manager.Config()
+	next := config.Default()
+	dec := json.NewDecoder(bytes.NewReader(body.Config))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&next); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	next.MergeSecrets(prev, body.ClearSecrets)
+	next.KeepEnvOverrides(prev)
+	if err := next.Validate(); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	path := prev.Path
+	if path == "" {
+		path = config.DefaultPath()
+	}
+	if err := next.Save(path); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	restart := s.Manager.SetConfig(&next)
+	s.mu.Lock()
+	s.restartRequired = mergeKeys(s.restartRequired, restart)
+	s.mu.Unlock()
+	if s.Logger != nil {
+		s.Logger.Info("config saved", "file", path, "restart_required", restart)
+	}
+	writeJSON(w, http.StatusOK, s.configView())
+}
+
+func mergeKeys(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range append(a, b...) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {

@@ -127,9 +127,16 @@ title was skipped.
 
 The web UI on port 8080 shows each drive, the current rip with progress and
 ETA, and a history with per-job logs. Buttons: Cancel, Eject, and Rip (which
-forces a disc that was ripped before). `GET /api/status`, `/api/history`,
-`/api/series` give the same as JSON; `POST /api/series/reset` with
-`{"series":"tmdb:1668","season":1}` restarts episode numbering for a season.
+forces a disc that was ripped before). The Settings page edits every key in
+the config file; Save validates, writes the file and applies the change to
+the running daemon. Drives, workspace, the listen address and logging need a
+restart, and the page says so. Keys set through `MR_*` environment variables
+show as locked, since the environment would win again on the next start.
+Saving rewrites the file without comments, so keep `config.example.yaml` as
+the reference. `GET /api/status`, `/api/history`, `/api/series` and
+`/api/config` give the same as JSON (`PUT /api/config` saves);
+`POST /api/series/reset` with `{"series":"tmdb:1668","season":1}` restarts
+episode numbering for a season.
 
 State lives in `workspace/state/`: `history.jsonl`, `discs.json` (ripped
 fingerprints) and `series.json` (next episode per season). All plain JSON;
