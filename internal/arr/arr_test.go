@@ -42,11 +42,31 @@ func fakeRadarr(t *testing.T) (*httptest.Server, *[]string) {
 			_, _ = w.Write([]byte(`{"id":7,"title":"The Matrix","tmdbId":603,"path":"/movies/The Matrix (1999)"}`))
 		case r.URL.Path == "/api/v3/qualityprofile":
 			_, _ = w.Write([]byte(`[{"id":1,"name":"Any"},{"id":4,"name":"HD-1080p"}]`))
+		case r.URL.Path == "/api/v3/manualimport":
+			if r.URL.Query().Get("folder") != "/data/incoming/The Matrix (1999)" {
+				t.Errorf("preview folder = %q", r.URL.Query().Get("folder"))
+			}
+			_, _ = w.Write([]byte(`[
+				{"path":"/data/incoming/The Matrix (1999)/The Matrix (1999).mkv","movie":{"id":7},"quality":{"quality":{"id":3,"name":"WEBDL-1080p"}},"languages":[{"id":1,"name":"English"}],"rejections":[]},
+				{"path":"/data/incoming/The Matrix (1999)/sample.mkv","rejections":[{"reason":"Sample","type":"permanent"}]}]`))
+		case r.URL.Path == "/api/v3/qualitydefinition":
+			_, _ = w.Write([]byte(`[{"quality":{"id":3,"name":"WEBDL-1080p"}},{"quality":{"id":30,"name":"Remux-1080p","source":"bluray","resolution":1080}}]`))
 		case r.URL.Path == "/api/v3/command" && r.Method == http.MethodPost:
-			var body map[string]any
+			var body struct {
+				Name       string           `json:"name"`
+				ImportMode string           `json:"importMode"`
+				Files      []map[string]any `json:"files"`
+			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body["name"] != "DownloadedMoviesScan" || body["path"] != "/data/incoming/The Matrix (1999)" || body["importMode"] != "Move" {
-				t.Errorf("command body: %v", body)
+			if body.Name != "ManualImport" || body.ImportMode != "move" || len(body.Files) != 1 {
+				t.Errorf("command body: %+v", body)
+			} else {
+				f := body.Files[0]
+				q, _ := f["quality"].(map[string]any)
+				qq, _ := q["quality"].(map[string]any)
+				if f["movieId"] != float64(7) || qq["name"] != "Remux-1080p" {
+					t.Errorf("import file: %v", f)
+				}
 			}
 			_, _ = w.Write([]byte(`{"id":55,"status":"queued"}`))
 		case r.URL.Path == "/api/v3/command/55":
@@ -90,8 +110,9 @@ func TestRadarrFlow(t *testing.T) {
 	if p := c.RemotePath("/elsewhere/x"); p != "/elsewhere/x" {
 		t.Fatalf("unmapped path: %s", p)
 	}
-	if err := c.Import(ctx, "/mnt/media/_incoming/The Matrix (1999)", time.Minute); err != nil {
-		t.Fatalf("import: %v", err)
+	res, err := c.Import(ctx, "/mnt/media/_incoming/The Matrix (1999)", ImportOptions{Wait: time.Minute, Quality: "Remux-1080p"})
+	if err != nil || res.Imported != 1 || len(res.Rejected) != 1 || res.Rejected["sample.mkv"][0] != "Sample" {
+		t.Fatalf("import: %v %+v", err, res)
 	}
 	joined := strings.Join(*calls, "\n")
 	if !strings.Contains(joined, "GET /api/v3/command/55") {
@@ -135,5 +156,26 @@ func TestSonarrEpisodes(t *testing.T) {
 	eps, err := c.Episodes(context.Background(), 3)
 	if err != nil || len(eps) != 2 || eps[0].Number != 1 || eps[0].Title != "Pilot" {
 		t.Fatalf("episodes: %v %+v", err, eps)
+	}
+}
+
+// The command finishing is not enough: Sonarr reports status "completed"
+// with result "unsuccessful" when it imported nothing.
+func TestImportUnsuccessfulResult(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v3/manualimport":
+			_, _ = w.Write([]byte(`[{"path":"/in/Show - S01E01.mkv","series":{"id":2},"episodes":[{"id":11}],"rejections":[]}]`))
+		case "/api/v3/command":
+			_, _ = w.Write([]byte(`{"id":1,"status":"completed","result":"unsuccessful","message":"Failed to import"}`))
+		default:
+			w.WriteHeader(404)
+		}
+	}))
+	defer srv.Close()
+	c := New(Sonarr, config.ArrApp{Enabled: true, URL: srv.URL, APIKey: "k"}, 5*time.Second, nil)
+	if _, err := c.Import(context.Background(), "/in", ImportOptions{}); err == nil || !strings.Contains(err.Error(), "Failed to import") {
+		t.Fatalf("err = %v", err)
 	}
 }
