@@ -349,3 +349,39 @@ func (s *Store) BoxSets() []BoxSet {
 	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
 	return out
 }
+
+// DiscInventory is what was read from a disc's filesystem, kept per job for
+// the disc manifest (TheDiscDB contributions).
+type DiscInventory struct {
+	ContentHash string      `json:"content_hash"`
+	Files       []FileEntry `json:"files"`
+}
+
+// FileEntry is one file on a disc.
+type FileEntry struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
+}
+
+// SaveInventory writes a job's disc inventory to manifests/<job>.json.
+func (s *Store) SaveInventory(jobID string, inv DiscInventory) error {
+	dir := filepath.Join(s.dir, "manifests")
+	if err := os.MkdirAll(dir, 0o775); err != nil {
+		return err
+	}
+	data, err := json.Marshal(inv)
+	if err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(dir, filepath.Base(jobID)+".json"), data)
+}
+
+// Inventory reads a job's disc inventory.
+func (s *Store) Inventory(jobID string) (DiscInventory, error) {
+	var inv DiscInventory
+	data, err := os.ReadFile(filepath.Join(s.dir, "manifests", filepath.Base(jobID)+".json"))
+	if err != nil {
+		return inv, err
+	}
+	return inv, json.Unmarshal(data, &inv)
+}
