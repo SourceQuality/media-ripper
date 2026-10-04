@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -37,8 +38,10 @@ type Discord struct {
 	// messages; a running discordbot.Bot handles the presses.
 	Buttons bool
 
-	mu       sync.Mutex
-	messages map[string]string // job id -> its live "Ripping" message
+	// Live keeps each job's live "Ripping" message, shared across config
+	// changes and, with a file, across restarts. Nil keeps it in memory.
+	Live *LiveMessages
+	mu   sync.Mutex
 
 	apiBase string // overridden in tests
 }
@@ -67,6 +70,32 @@ func (d *Discord) send(ctx context.Context, client *http.Client, ev Event) error
 		_, err := d.request(ctx, client, http.MethodPatch, id, payload)
 		return err
 	}
+	// One message per disc: what happens to a disc after it started is
+	// shown by editing its message, not by posting another.
+	switch ev.Type {
+	case "ready":
+		return nil // the disc's message already says the tray is open
+	case "interrupted", "review", "done", "failed":
+		if id := d.live(ev.JobID, "", ev.Type == "done" || ev.Type == "failed"); id != "" && ev.JobID != "" {
+			if _, ok := payload["components"]; !ok {
+				payload["components"] = []any{} // the Cancel button goes
+			}
+			if _, err := d.request(ctx, client, http.MethodPatch, id, payload); err == nil {
+				return nil
+			}
+		}
+		if ev.Type == "interrupted" {
+			return nil
+		}
+	}
+	// A rip resumed after a restart keeps its message.
+	if ev.Type == "started" && ev.JobID != "" {
+		if id := d.live(ev.JobID, "", false); id != "" {
+			if _, err := d.request(ctx, client, http.MethodPatch, id, payload); err == nil {
+				return nil
+			}
+		}
+	}
 	id, err := d.request(ctx, client, http.MethodPost, "", payload)
 	if err == nil && ev.Type == "started" && ev.JobID != "" && id != "" {
 		d.live(ev.JobID, id, false)
@@ -78,17 +107,49 @@ func (d *Discord) send(ctx context.Context, client *http.Client, ev Event) error
 // it after this last edit.
 func (d *Discord) live(jobID, id string, final bool) string {
 	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.messages == nil {
-		d.messages = map[string]string{}
+	if d.Live == nil {
+		d.Live = &LiveMessages{}
 	}
-	if id != "" {
-		d.messages[jobID] = id
-		return id
+	l := d.Live
+	d.mu.Unlock()
+	return l.use(jobID, id, final)
+}
+
+// LiveMessages maps job ids to their live Discord message, saved to File
+// (when set) so a rip resumed after a restart edits the same message.
+type LiveMessages struct {
+	File string
+	mu   sync.Mutex
+	ids  map[string]string
+}
+
+func (l *LiveMessages) use(jobID, id string, final bool) string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.ids == nil {
+		l.ids = map[string]string{}
+		if l.File != "" {
+			if data, err := os.ReadFile(l.File); err == nil {
+				_ = json.Unmarshal(data, &l.ids)
+			}
+		}
 	}
-	got := d.messages[jobID]
-	if final {
-		delete(d.messages, jobID)
+	got, changed := l.ids[jobID], false
+	switch {
+	case id != "":
+		got, changed = id, l.ids[jobID] != id
+		l.ids[jobID] = id
+	case final && got != "":
+		delete(l.ids, jobID)
+		changed = true
+	}
+	if changed && l.File != "" {
+		if data, err := json.Marshal(l.ids); err == nil {
+			tmp := l.File + ".tmp"
+			if os.WriteFile(tmp, data, 0o600) == nil {
+				_ = os.Rename(tmp, l.File)
+			}
+		}
 	}
 	return got
 }
@@ -192,21 +253,27 @@ func discordEmbed(ev Event) map[string]any {
 	case "ready":
 		e["title"], e["color"] = "Ready for the next disc", colorGreen
 		e["description"] = fmt.Sprintf("**%s** is ripped and the tray is open. Copying and import carry on in the background.", name)
+	case "interrupted":
+		e["title"], e["color"] = "Paused: "+name, colorGrey
+		e["description"] = strings.TrimSpace(ev.Match + "\n**" + ev.Summary + "**")
+		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 	case "done":
-		e["title"] = "Done: " + name
+		e["title"] = "✅ Done: " + name
 		e["color"] = colorGreen
 		if len(ev.Warnings) > 0 {
-			e["color"] = colorAmber
+			e["title"], e["color"] = "⚠️ Done with warnings: "+name, colorAmber
 		}
-		e["description"] = fmt.Sprintf("%d file(s) delivered in %s.", len(ev.Outputs), ev.Elapsed)
+		e["description"] = strings.TrimSpace(ev.Match + fmt.Sprintf("\n**%d file(s) delivered in %s.**", len(ev.Outputs), ev.Elapsed))
+		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 		field("Warnings", strings.Join(ev.Warnings, "\n"), false)
 	case "review":
 		e["title"], e["color"] = "Waiting for review: "+name, colorAmber
 		e["description"] = ev.Match + "\nThe files are in staging. Approve or correct the titles in the web UI's Review section; nothing is imported until then."
 		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 	case "failed":
-		e["title"], e["color"] = "Failed: "+name, colorRed
+		e["title"], e["color"] = "❌ Failed: "+name, colorRed
 		e["description"] = ev.Error
+		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 	case "skipped":
 		e["title"], e["color"] = "Skipped: "+name, colorGrey
 		e["description"] = ev.Error

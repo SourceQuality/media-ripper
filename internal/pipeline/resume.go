@@ -22,6 +22,11 @@ type resumeState struct {
 	Label       string                `json:"label,omitempty"`
 	Updated     time.Time             `json:"updated"`
 	Titles      map[int]*resumedTitle `json:"titles"`
+	// JobID and Started identify the attempt; one cut short by a restart
+	// (Interrupted) is carried on under the same id.
+	JobID       string    `json:"job_id,omitempty"`
+	Started     time.Time `json:"started,omitempty"`
+	Interrupted bool      `json:"interrupted,omitempty"`
 }
 
 type resumedTitle struct {
@@ -114,6 +119,23 @@ func (r *resume) markDelivered(titleID int, out Output) error {
 	return r.update(titleID, func(t *resumedTitle) { t.Ripped, t.Delivered = "", &out })
 }
 
+// restarted returns the id and start of an attempt that a restart cut
+// short, which this attempt continues.
+func (r *resume) restarted() (string, time.Time, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.state.JobID, r.state.Started, r.state.Interrupted && r.state.JobID != ""
+}
+
+// begin records the attempt now running, so the workspace is kept for it
+// from the start (not only once a title is ripped).
+func (r *resume) begin(jobID string, started time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.state.JobID, r.state.Started, r.state.Interrupted = jobID, started, false
+	return r.saveLocked()
+}
+
 func (r *resume) update(titleID int, fn func(t *resumedTitle)) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -123,6 +145,10 @@ func (r *resume) update(titleID int, fn func(t *resumedTitle)) error {
 		r.state.Titles[titleID] = t
 	}
 	fn(t)
+	return r.saveLocked()
+}
+
+func (r *resume) saveLocked() error {
 	r.state.Updated = time.Now()
 	data, err := json.MarshalIndent(r.state, "", "  ")
 	if err != nil {

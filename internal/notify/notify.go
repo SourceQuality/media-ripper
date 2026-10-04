@@ -87,9 +87,10 @@ func (n *Notifier) send(ctx context.Context, ev Event) error {
 			n.Logger.Warn("notify failed", "target", target, "err", err)
 		}
 	}
-	if ev.Type == "progress" {
+	if ev.Type == "progress" || ev.Type == "interrupted" {
 		// Progress only updates Discord's live message in place; for the
-		// webhook and ntfy it would be a flood.
+		// webhook and ntfy it would be a flood. A restart pause is shown
+		// there too, and needs no alert.
 		if n.Discord.enabled() {
 			report("discord", n.Discord.send(ctx, client, ev))
 		}

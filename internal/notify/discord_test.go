@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -75,9 +77,10 @@ func TestDiscordWebhookAndTest(t *testing.T) {
 	if got.reqs[0].URL.Path != "/api/webhooks/1/abc" || got.body[0]["username"] != "media-ripper" {
 		t.Fatalf("webhook request %s %v", got.reqs[0].URL.Path, got.body[0])
 	}
+	// The disc's own message says the tray is open; no extra message.
 	n.Send(context.Background(), Event{Type: "ready", Title: "The Twilight Zone S01 D2"})
-	if title := got.body[1]["embeds"].([]any)[0].(map[string]any)["title"]; title != "Ready for the next disc" {
-		t.Fatalf("ready title = %v", title)
+	if len(got.body) != 1 {
+		t.Fatalf("ready posted a message: %v", got.body[1:])
 	}
 }
 
@@ -165,8 +168,9 @@ func TestButtonsOnBotMessages(t *testing.T) {
 	}
 }
 
-// The "Ripping" message is edited in place with progress, and the last
-// edit removes the buttons; the bot and the webhook both work.
+// One message per disc: the "Ripping" message is edited in place with
+// progress, a restart pause and the outcome, which removes the buttons;
+// the bot and the webhook both work.
 func TestLiveProgressMessage(t *testing.T) {
 	for _, mode := range []string{"bot", "webhook"} {
 		var mu sync.Mutex
@@ -194,7 +198,10 @@ func TestLiveProgressMessage(t *testing.T) {
 		n.Send(ctx, Event{Type: "started", JobID: "j1", Title: "The Twilight Zone S01 D3"})
 		n.Send(ctx, Event{Type: "progress", JobID: "j1", Title: "The Twilight Zone S01 D3", Summary: "Ripping 2 of 7 · 1 delivered",
 			Items: []string{"✅ S01E16 The Hitch-Hiker · delivered", "▶️ S01E17 The Fever · ripping 40% · 20.1 MB/s · 3m0s left"}})
-		n.Send(ctx, Event{Type: "progress", JobID: "j1", Final: true, Summary: "Done"})
+		n.Send(ctx, Event{Type: "interrupted", JobID: "j1", Title: "The Twilight Zone S01 D3", Summary: "⏸ Paused"})
+		n.Send(ctx, Event{Type: "started", JobID: "j1", Title: "The Twilight Zone S01 D3"}) // resumed: same message
+		n.Send(ctx, Event{Type: "ready", JobID: "j1", Title: "The Twilight Zone S01 D3"})   // nothing new to say
+		n.Send(ctx, Event{Type: "done", JobID: "j1", Title: "The Twilight Zone S01 D3", Items: []string{"✅ S01E16 · imported"}})
 		n.Send(ctx, Event{Type: "progress", JobID: "j1", Summary: "after the end"}) // forgotten: no edit
 		srv.Close()
 
@@ -203,8 +210,19 @@ func TestLiveProgressMessage(t *testing.T) {
 		if mode == "webhook" {
 			wantEdit, wantPost = "PATCH /api/webhooks/1/abc/messages/msg42?", "POST /api/webhooks/1/abc?wait=true"
 		}
-		if len(reqs) != 3 || reqs[0] != wantPost || reqs[1] != wantEdit || reqs[2] != wantEdit {
+		if len(reqs) != 5 || reqs[0] != wantPost {
 			t.Fatalf("%s: requests = %v", mode, reqs)
+		}
+		for _, r := range reqs[1:] {
+			if r != wantEdit {
+				t.Fatalf("%s: requests = %v", mode, reqs)
+			}
+		}
+		if title := bodies[2]["embeds"].([]any)[0].(map[string]any)["title"]; title != "Paused: The Twilight Zone S01 D3" {
+			t.Fatalf("%s: pause title = %v", mode, title)
+		}
+		if title := bodies[4]["embeds"].([]any)[0].(map[string]any)["title"]; title != "✅ Done: The Twilight Zone S01 D3" {
+			t.Fatalf("%s: done title = %v", mode, title)
 		}
 		embed := bodies[1]["embeds"].([]any)[0].(map[string]any)
 		desc, _ := embed["description"].(string)
@@ -213,9 +231,33 @@ func TestLiveProgressMessage(t *testing.T) {
 			t.Fatalf("%s: progress embed = %v", mode, embed)
 		}
 		if mode == "bot" {
-			if c, _ := bodies[2]["components"].([]any); c == nil || len(c) != 0 {
-				t.Fatalf("final edit keeps buttons: %v", bodies[2]["components"])
+			if c, _ := bodies[4]["components"].([]any); c == nil || len(c) != 0 {
+				t.Fatalf("final edit keeps buttons: %v", bodies[4]["components"])
 			}
 		}
+	}
+}
+
+// The live message survives a restart (and a settings change): the ids
+// are kept in a file shared by every Discord built from the config.
+func TestLiveMessagesPersist(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "discord-messages.json")
+	var reqs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r.Method)
+		_, _ = w.Write([]byte(`{"id":"msg7"}`))
+	}))
+	defer srv.Close()
+	first := &Notifier{Discord: &Discord{BotToken: "tok", ChannelID: "c", apiBase: srv.URL, Live: &LiveMessages{File: file}}}
+	first.Send(context.Background(), Event{Type: "started", JobID: "j9", Title: "x"})
+	// After the restart: a new process, a new Discord.
+	again := &Notifier{Discord: &Discord{BotToken: "tok", ChannelID: "c", apiBase: srv.URL, Live: &LiveMessages{File: file}}}
+	again.Send(context.Background(), Event{Type: "started", JobID: "j9", Title: "x"})
+	again.Send(context.Background(), Event{Type: "done", JobID: "j9", Title: "x"})
+	if strings.Join(reqs, ",") != "POST,PATCH,PATCH" {
+		t.Fatalf("requests = %v", reqs)
+	}
+	if data, _ := os.ReadFile(file); strings.Contains(string(data), "j9") {
+		t.Fatalf("finished job still remembered: %s", data)
 	}
 }
