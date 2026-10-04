@@ -13,19 +13,15 @@ import (
 	"time"
 )
 
-// DefaultDiscordApp is the media-ripper Discord application. Its invite
-// link adds the bot to a server; posting as it needs its bot token.
-const DefaultDiscordApp = "1556123331047202997"
-
 // discordPermissions is View Channel (1<<10) + Send Messages (1<<11) +
 // Embed Links (1<<14): all the bot needs to post its embeds.
 const discordPermissions = 1<<10 | 1<<11 | 1<<14
 
 // DiscordInviteURL is the link that adds application appID to a server
-// with only the permissions media-ripper uses.
+// with only the permissions media-ripper uses; empty without an appID.
 func DiscordInviteURL(appID string) string {
 	if appID == "" {
-		appID = DefaultDiscordApp
+		return ""
 	}
 	q := url.Values{"client_id": {appID}, "scope": {"bot"}, "permissions": {fmt.Sprint(discordPermissions)}}
 	return "https://discord.com/oauth2/authorize?" + q.Encode()

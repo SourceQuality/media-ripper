@@ -125,8 +125,8 @@
       { key: 'notify.webhook_url', label: 'Webhook URL', type: 'text', wide: true },
     ]},
     { title: 'Discord', fields: [
-      { key: 'notify.discord.application_id', label: 'Bot application ID', type: 'text', hint: 'The media-ripper bot by default; use your own application to post as your own bot' },
-      { key: 'discord.invite', label: 'Invite the bot', type: 'invite', hint: 'Adds the bot to a server with View Channel, Send Messages and Embed Links only' },
+      { key: 'notify.discord.application_id', label: 'Bot application ID', type: 'text', hint: 'From discord.com/developers/applications: your application\'s General Information page' },
+      { key: 'discord.invite', label: 'Invite the bot', type: 'invite', hint: 'Adds the bot to a server with View Channel, Send Messages and Embed Links only. Needs the application ID' },
       { key: 'notify.discord.bot_token', label: 'Bot token', type: 'secret', hint: 'From the application\'s Bot page in the Discord developer portal' },
       { key: 'notify.discord.channel_id', label: 'Channel ID', type: 'text', hint: 'Developer mode on, then right-click the channel → Copy Channel ID' },
       { key: 'notify.discord.webhook_url', label: 'Or: channel webhook URL', type: 'secret', wide: true, hint: 'Channel settings → Integrations → Webhooks. Used when no bot token and channel are set' },
@@ -153,8 +153,14 @@
 
   // Same link as notify.DiscordInviteURL: bot scope, View Channel +
   // Send Messages + Embed Links (19456).
-  const DEFAULT_DISCORD_APP = '1556123331047202997';
-  const inviteURL = appID => `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent((appID || '').trim() || DEFAULT_DISCORD_APP)}&scope=bot&permissions=19456`;
+  // No link until there is an application to invite.
+  const inviteURL = appID => (appID || '').trim() ? `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(appID.trim())}&scope=bot&permissions=19456` : '';
+  const setInvite = (a, appID) => {
+    const url = inviteURL(appID);
+    if (url) a.href = url; else a.removeAttribute('href');
+    a.classList.toggle('disabled', !url);
+    a.setAttribute('aria-disabled', String(!url));
+  };
   const NON_DATA = new Set(['invite', 'action', 'password-change', 'api-token', 'tls-info']);
 
   // What most people set; everything else is behind "Show advanced
@@ -188,7 +194,7 @@
       case 'lines': return `<textarea id="${id(f.key)}" rows="${Math.max(2, (value || []).length + 1)}"${dis}>${(value || []).join('\n')}</textarea>`;
       case 'map': { const lines = Object.entries(value || {}).map(([k, v]) => `${k} = ${v}`); return `<textarea id="${id(f.key)}" rows="${Math.max(2, lines.length + 1)}"${dis}>${lines.join('\n')}</textarea>`; }
       case 'secret': { const isSet = state.secrets[f.key]; return `<span class="secret"><input type="password" id="${id(f.key)}" placeholder="${isSet ? '••••••••' : ''}"${dis}>${isSet && !locked ? `<button type="button" class="clear" data-key="${f.key}">Clear</button>` : ''}</span>`; }
-      case 'invite': return `<a class="btn" id="${id(f.key)}" href="${inviteURL(get(state.config, 'notify.discord.application_id'))}" target="_blank" rel="noopener">Add to Discord</a>`;
+      case 'invite': return `<a class="btn" id="${id(f.key)}" target="_blank" rel="noopener">Add to Discord</a>`;
       case 'action': return `<span class="row"><button type="button" id="${id(f.key)}" data-action="${f.action}">${f.text}</button><span class="hint" id="${id(f.key)}-status"></span></span>`;
       case 'tls-info': return state.tls ? `<span class="small">${state.tls.mode === 'auto' ? 'Made on this machine' : 'From your files'}, valid until ${new Date(state.tls.expires).toLocaleDateString()}<br>SHA-256 <code>${state.tls.fingerprint}</code><br><span class="muted">Your browser asks once to trust it; the fingerprint it shows should match this.</span></span>` : '<span class="muted">HTTPS is off</span>';
       case 'password-change': return `<span class="row"><input type="password" id="pw-current" placeholder="Current password" autocomplete="current-password">
@@ -215,7 +221,10 @@
     renderNav();
     const appInput = document.getElementById(id('notify.discord.application_id'));
     const invite = document.getElementById(id('discord.invite'));
-    if (appInput && invite) appInput.oninput = () => { invite.href = inviteURL(appInput.value); };
+    if (appInput && invite) {
+      setInvite(invite, appInput.value);
+      appInput.oninput = () => setInvite(invite, appInput.value);
+    }
     document.querySelectorAll('button[data-action="test-notify"]').forEach(b => b.onclick = () => {
       const out = document.getElementById(b.id + '-status');
       b.disabled = true; out.textContent = 'Sending…';

@@ -159,7 +159,7 @@ func TestDiscordSettingsAndTest(t *testing.T) {
 			t.Fatalf("config leaks %q", leak)
 		}
 	}
-	if !strings.Contains(string(body), `"notify.discord.bot_token": true`) || !strings.Contains(string(body), `"application_id": "1556123331047202997"`) {
+	if !strings.Contains(string(body), `"notify.discord.bot_token": true`) || !strings.Contains(string(body), `"application_id": ""`) {
 		t.Fatalf("config view: %s", body)
 	}
 

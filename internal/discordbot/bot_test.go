@@ -55,7 +55,7 @@ func fakeDiscord(t *testing.T, press func(conn *websocket.Conn, ctx context.Cont
 		if ident.Op != 2 || ident.D.Token != "bot-token" {
 			t.Errorf("identify = %s", data)
 		}
-		_ = conn.Write(ctx, websocket.MessageText, []byte(`{"op":0,"s":1,"t":"READY","d":{"user":{"username":"media-ripper"},"application":{"id":"1556123331047202997"}}}`))
+		_ = conn.Write(ctx, websocket.MessageText, []byte(`{"op":0,"s":1,"t":"READY","d":{"user":{"username":"media-ripper"},"application":{"id":"123456789012345678"}}}`))
 		press(conn, ctx)
 		<-ctx.Done()
 	}))
@@ -100,7 +100,7 @@ func TestButtonPressIsAcknowledgedHandledAndShown(t *testing.T) {
 	if calls[0] != "POST /interactions/int1/tok1/callback auth=Bot bot-token" || r.bodies[0]["type"] != float64(6) {
 		t.Fatalf("acknowledge = %s %v", calls[0], r.bodies[0])
 	}
-	if calls[1] != "PATCH /webhooks/1556123331047202997/tok1/messages/@original auth=Bot bot-token" {
+	if calls[1] != "PATCH /webhooks/123456789012345678/tok1/messages/@original auth=Bot bot-token" {
 		t.Fatalf("edit = %s", calls[1])
 	}
 	if c := r.bodies[1]["content"]; c != "Imported 8 episodes — jack" {

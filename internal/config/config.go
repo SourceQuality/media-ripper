@@ -284,9 +284,6 @@ type Discord struct {
 	AllowedUsers []string `yaml:"allowed_users" json:"allowed_users"`
 }
 
-// DefaultDiscordApp is the media-ripper Discord application.
-const DefaultDiscordApp = "1556123331047202997"
-
 // Log configures logging.
 type Log struct {
 	Level  string `yaml:"level" json:"level"`
@@ -319,7 +316,7 @@ func Default() Config {
 			Retries:       1,
 			WriteSettings: true,
 		},
-		Notify:  Notify{Discord: Discord{ApplicationID: DefaultDiscordApp, Buttons: true}},
+		Notify:  Notify{Discord: Discord{Buttons: true}},
 		Updates: Updates{Check: true, Repo: "SourceQuality/media-ripper"},
 		Auth:    Auth{Enabled: true},
 		Metadata: Metadata{

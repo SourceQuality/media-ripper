@@ -41,6 +41,7 @@ button:hover { border-color: var(--accent); }
 button.icon { padding: 4px 8px; font-size: 15px; line-height: 1; }
 a.btn { font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; text-decoration: none; font-size: 14px; }
 a.btn:hover { border-color: var(--accent); }
+a.btn.disabled { opacity: .5; pointer-events: none; }
 button.danger { color: var(--bad); }
 table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: 14px; }

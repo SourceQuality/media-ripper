@@ -336,3 +336,8 @@ fingerprint), `internal/makemkv` (robot-mode parser and runner),
 `internal/selector` (title choice), `internal/naming`,
 `internal/postprocess`, `internal/pipeline` (the per-drive state machine),
 `internal/store`, `internal/web`.
+
+## License
+
+GNU General Public License v3.0; see [LICENSE](LICENSE). MakeMKV is not
+part of this project and has its own license.
