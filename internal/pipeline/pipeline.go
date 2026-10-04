@@ -94,6 +94,8 @@ type Manager struct {
 	// folderWanted maps a disc fingerprint to the job whose TheDiscDB
 	// folder should be read when that disc goes in.
 	folderWanted map[string]folderRequest
+	// folderReading are the jobs whose disc is being read right now.
+	folderReading map[string]bool
 	// running counts Run calls still winding down.
 	running sync.WaitGroup
 }

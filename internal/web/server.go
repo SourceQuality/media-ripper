@@ -74,6 +74,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}/files", s.discFiles)
 	mux.HandleFunc("GET /api/jobs/{id}/disc-folder", s.discFolder)
 	mux.HandleFunc("POST /api/jobs/{id}/disc-folder/read", s.discFolderRead)
+	mux.HandleFunc("DELETE /api/jobs/{id}/disc-folder/read", s.discFolderRead)
 	mux.HandleFunc("POST /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
 	mux.HandleFunc("DELETE /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
 	mux.HandleFunc("GET /api/jobs/{id}/disc-folder.zip", s.discFolderZip)
@@ -417,6 +418,11 @@ func (s *Server) discFolder(w http.ResponseWriter, r *http.Request) {
 
 // discFolderRead reads the folder when the disc is next put in.
 func (s *Server) discFolderRead(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodDelete {
+		s.Manager.CancelDiscFolder(r.PathValue("id"))
+		writeJSON(w, http.StatusOK, map[string]bool{"waiting": false})
+		return
+	}
 	if err := s.Manager.RequestDiscFolder(r.PathValue("id")); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
