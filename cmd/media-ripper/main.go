@@ -4,6 +4,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
+	"github.com/sourcequality/media-ripper/internal/tlsutil"
 	"github.com/sourcequality/media-ripper/internal/udf"
 	"github.com/sourcequality/media-ripper/internal/updates"
 	"github.com/sourcequality/media-ripper/internal/web"
@@ -168,18 +171,35 @@ func runDaemon(cfgPath string) error {
 		if err != nil {
 			return fmt.Errorf("listen %s: %w", cfg.Web.Listen, err)
 		}
-		go func() {
-			if err := hs.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				log.Error("http server", "err", err)
+		servers := []*http.Server{hs}
+		if cfg.Web.TLS == "off" {
+			go serve(hs, ln, log)
+			log.Info("web ui", "listen", cfg.Web.Listen, "tls", "off")
+		} else {
+			cert, err := webCertificate(cfg)
+			if err != nil {
+				return err
 			}
-		}()
+			srv.TLS = &web.TLSInfo{Mode: cfg.Web.TLS, Fingerprint: tlsutil.Fingerprint(cert), Expires: tlsutil.Expiry(cert)}
+			tlsL, plainL := tlsutil.Split(ln)
+			hs.TLSConfig = &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12}
+			// Plain http:// on the same port goes to https://.
+			redirect := &http.Server{ReadHeaderTimeout: 10 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, "https://"+r.Host+r.URL.RequestURI(), http.StatusPermanentRedirect)
+			})}
+			servers = append(servers, redirect)
+			go serve(hs, tls.NewListener(tlsL, hs.TLSConfig), log)
+			go serve(redirect, plainL, log)
+			log.Info("web ui", "listen", cfg.Web.Listen, "tls", cfg.Web.TLS, "fingerprint", srv.TLS.Fingerprint, "expires", srv.TLS.Expires.Format("2006-01-02"))
+		}
 		go func() {
 			<-ctx.Done()
 			sctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
-			_ = hs.Shutdown(sctx)
+			for _, s := range servers {
+				_ = s.Shutdown(sctx)
+			}
 		}()
-		log.Info("web ui", "listen", cfg.Web.Listen)
 	}
 	// Buttons on Discord messages arrive over the bot's Gateway connection.
 	if d := cfg.Notify.Discord; d.Buttons && d.BotToken != "" {
@@ -417,4 +437,19 @@ func readPassword(prompt string) (string, error) {
 		return "", errors.New("no password given")
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+func serve(hs *http.Server, l net.Listener, log *slog.Logger) {
+	if err := hs.Serve(l); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+		log.Error("http server", "err", err)
+	}
+}
+
+// webCertificate is the HTTPS certificate: your own files, or one made on
+// this machine and kept with the state (renewed before it expires).
+func webCertificate(cfg *config.Config) (tls.Certificate, error) {
+	if cfg.Web.TLS == "files" {
+		return tlsutil.Load(cfg.Web.TLSCert, cfg.Web.TLSKey)
+	}
+	return tlsutil.SelfSigned(filepath.Join(cfg.StateDir(), "tls"), tlsutil.Names(cfg.Web.TLSHosts), time.Now())
 }

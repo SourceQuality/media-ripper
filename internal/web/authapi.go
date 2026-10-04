@@ -103,6 +103,25 @@ func sameOrigin(r *http.Request) bool {
 	return false
 }
 
+// browserHTTPS reports whether the browser reached us over https, which
+// decides the cookie's Secure flag (a Secure cookie on an http:// page is
+// dropped and sign-in silently fails). Behind a local reverse proxy
+// (Tailscale serve talking TLS to us while the browser uses http) only the
+// proxy's X-Forwarded-Proto tells; directly, the connection does.
+func browserHTTPS(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+			return strings.EqualFold(proto, "https")
+		}
+		return false
+	}
+	return r.TLS != nil
+}
+
 // client identifies who is guessing passwords. Behind a local reverse
 // proxy (Tailscale serve) the real address is in X-Forwarded-For.
 func client(r *http.Request) string {
@@ -204,8 +223,7 @@ func (s *Server) signIn(w http.ResponseWriter, r *http.Request, user, hash strin
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: sess.Issue(user, auth.PasswordVersion(hash), time.Now()), Path: "/",
-		MaxAge: int(sess.TTL.Seconds()), HttpOnly: true, SameSite: http.SameSiteStrictMode,
-		Secure: r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"})
+		MaxAge: int(sess.TTL.Seconds()), HttpOnly: true, SameSite: http.SameSiteStrictMode, Secure: browserHTTPS(r)})
 }
 
 func (s *Server) authLogout(w http.ResponseWriter, r *http.Request) {

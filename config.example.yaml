@@ -200,6 +200,15 @@ eject:
 web:
   enabled: true
   listen: ":8080"
+  # HTTPS. auto: a certificate made on this machine for its host name, every
+  # address and tls_hosts, renewed before it expires (browsers ask once to
+  # trust it; compare the fingerprint shown in Settings → Web). files: your
+  # own certificate (e.g. from Let's Encrypt). off: plain HTTP. Plain
+  # http:// on the same port is redirected to https://.
+  tls: auto
+  tls_cert: ""
+  tls_key: ""
+  tls_hosts: []             # e.g. [ripper.example.com, ripper.tailnet.ts.net]
 
 notify:
   # Optional. ntfy topic URL, e.g. https://ntfy.sh/my-ripper

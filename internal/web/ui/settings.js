@@ -113,6 +113,11 @@
     { title: 'Web', fields: [
       { key: 'web.enabled', label: 'Enabled', type: 'bool' },
       { key: 'web.listen', label: 'Listen address', type: 'text' },
+      { key: 'web.tls', label: 'HTTPS', type: 'select', options: ['auto', 'files', 'off'], hint: 'auto: a certificate made on this machine; files: your own' },
+      { key: 'web.tls_info', label: 'Certificate in use', type: 'tls-info', wide: true },
+      { key: 'web.tls_hosts', label: 'Extra names for the certificate', type: 'lines', hint: 'One per line, e.g. a Tailscale or DNS name; host name and addresses are included' },
+      { key: 'web.tls_cert', label: 'Certificate file', type: 'text', wide: true, hint: 'For files: PEM certificate (chain)' },
+      { key: 'web.tls_key', label: 'Key file', type: 'text', wide: true, hint: 'For files: PEM private key' },
     ]},
     { title: 'Notifications', fields: [
       { key: 'notify.ntfy_url', label: 'ntfy URL', type: 'text', wide: true },
@@ -150,7 +155,7 @@
   // Send Messages + Embed Links (19456).
   const DEFAULT_DISCORD_APP = '1556123331047202997';
   const inviteURL = appID => `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent((appID || '').trim() || DEFAULT_DISCORD_APP)}&scope=bot&permissions=19456`;
-  const NON_DATA = new Set(['invite', 'action', 'password-change', 'api-token']);
+  const NON_DATA = new Set(['invite', 'action', 'password-change', 'api-token', 'tls-info']);
 
   const get = (obj, key) => key.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const set = (obj, key, val) => { const ks = key.split('.'); let o = obj; for (const k of ks.slice(0, -1)) { o[k] = o[k] || {}; o = o[k]; } o[ks.at(-1)] = val; };
@@ -169,6 +174,7 @@
       case 'secret': { const isSet = state.secrets[f.key]; return `<span class="secret"><input type="password" id="${id(f.key)}" placeholder="${isSet ? '••••••••' : ''}"${dis}>${isSet && !locked ? `<button type="button" class="clear" data-key="${f.key}">Clear</button>` : ''}</span>`; }
       case 'invite': return `<a class="btn" id="${id(f.key)}" href="${inviteURL(get(state.config, 'notify.discord.application_id'))}" target="_blank" rel="noopener">Add to Discord</a>`;
       case 'action': return `<span class="row"><button type="button" id="${id(f.key)}" data-action="${f.action}">${f.text}</button><span class="hint" id="${id(f.key)}-status"></span></span>`;
+      case 'tls-info': return state.tls ? `<span class="small">${state.tls.mode === 'auto' ? 'Made on this machine' : 'From your files'}, valid until ${new Date(state.tls.expires).toLocaleDateString()}<br>SHA-256 <code>${state.tls.fingerprint}</code><br><span class="muted">Your browser asks once to trust it; the fingerprint it shows should match this.</span></span>` : '<span class="muted">HTTPS is off</span>';
       case 'password-change': return `<span class="row"><input type="password" id="pw-current" placeholder="Current password" autocomplete="current-password">
         <input type="password" id="pw-new" placeholder="New password (8+ characters)" autocomplete="new-password"><button type="button" id="pw-save">Change</button><span class="hint" id="pw-status"></span></span>`;
       case 'api-token': return `<span class="row"><button type="button" id="tok-new">${state.secrets['auth.api_token_hash'] ? 'Replace token' : 'Create token'}</button>

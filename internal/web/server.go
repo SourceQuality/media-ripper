@@ -33,6 +33,8 @@ type Server struct {
 	Version string
 	Logger  *slog.Logger
 	Updates *updates.Watcher
+	// TLS describes the HTTPS certificate in use (nil when off).
+	TLS *TLSInfo
 
 	mu              sync.Mutex
 	restartRequired []string
@@ -142,6 +144,7 @@ type configResponse struct {
 	Env             []string        `json:"env"`
 	Path            string          `json:"path"`
 	RestartRequired []string        `json:"restart_required"`
+	TLS             *TLSInfo        `json:"tls,omitempty"`
 }
 
 func (s *Server) configView() configResponse {
@@ -157,7 +160,7 @@ func (s *Server) configView() configResponse {
 	if restart == nil {
 		restart = []string{}
 	}
-	return configResponse{Config: red, Secrets: secrets, Env: env, Path: cfg.Path, RestartRequired: restart}
+	return configResponse{Config: red, Secrets: secrets, Env: env, Path: cfg.Path, RestartRequired: restart, TLS: s.TLS}
 }
 
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
@@ -408,4 +411,12 @@ func (s *Server) contribution(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	_, _ = w.Write([]byte(text))
+}
+
+// TLSInfo is shown in Settings so the certificate a browser asks about can
+// be checked against the one the ripper uses.
+type TLSInfo struct {
+	Mode        string    `json:"mode"`
+	Fingerprint string    `json:"fingerprint"`
+	Expires     time.Time `json:"expires"`
 }
