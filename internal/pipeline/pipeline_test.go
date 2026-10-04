@@ -414,7 +414,7 @@ func TestMoveFileAcrossCopy(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	n, err := moveFile(context.Background(), src, dst, 0o644)
+	n, err := moveFile(context.Background(), src, dst, 0o644, nil)
 	if err != nil || n != 5000 {
 		t.Fatalf("move: %d %v", n, err)
 	}
@@ -688,4 +688,35 @@ func TestDriveStatusLiveDuringJob(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("never saw the job between eject and finish")
+}
+
+// A remux in progress shows up as an activity with its output growing.
+func TestRemuxActivity(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	e.cfg.PostProcess.Mode = "custom"
+	e.cfg.PostProcess.CustomCommand = []string{"sh", "-c", "head -c 50000 \"$1\" > \"$2\"; sleep 2; cat \"$1\" >> \"$2\"", "sh", "{input}", "{output}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, d := range e.m.Snapshot().Drives {
+			if d.Job == nil {
+				continue
+			}
+			for _, a := range d.Job.Activities {
+				if a.Kind == "remux" && a.Done > 0 {
+					if a.Total != 0 || a.Item != "S01E01" {
+						t.Fatalf("custom command activity = %+v (total should be unknown)", a)
+					}
+					return
+				}
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("no remux activity seen")
 }

@@ -26,6 +26,35 @@ type Options struct {
 	CustomExt     string
 	Timeout       time.Duration
 	Logger        *slog.Logger
+	// Progress, if set, is called about once a second with the bytes
+	// written so far and the expected final size (0 when unknown, as for
+	// a transcode).
+	Progress func(done, total int64)
+}
+
+// watchOutput reports the growing size of output until stop is closed.
+func watchOutput(output string, total int64, progress func(done, total int64)) (stop func()) {
+	if progress == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			if st, err := os.Stat(output); err == nil {
+				progress(st.Size(), total)
+			}
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	return func() { close(done); <-finished }
 }
 
 // Result describes what happened.
@@ -76,6 +105,13 @@ func Run(ctx context.Context, input, title string, opts Options) (Result, error)
 		return Result{Output: input, Tool: "mkvpropedit"}, nil
 	}
 	output := strings.TrimSuffix(input, filepath.Ext(input)) + ".remux.mkv"
+	// A remux copies the streams it keeps, so the input size is the upper
+	// bound of the output.
+	var inSize int64
+	if st, err := os.Stat(input); err == nil {
+		inSize = st.Size()
+	}
+	stop := watchOutput(output, inSize, opts.Progress)
 	var err error
 	switch tool {
 	case "mkvmerge":
@@ -85,6 +121,7 @@ func Run(ctx context.Context, input, title string, opts Options) (Result, error)
 	default:
 		return Result{}, fmt.Errorf("unknown tool %q", tool)
 	}
+	stop()
 	if err != nil {
 		_ = os.Remove(output)
 		return Result{}, err
@@ -333,7 +370,10 @@ func runCustom(ctx context.Context, input, title string, opts Options) (Result, 
 	}
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
 	cmd.WaitDelay = 10 * time.Second
+	// A custom command may transcode, so the final size is unknown.
+	stop := watchOutput(output, 0, opts.Progress)
 	out, err := cmd.CombinedOutput()
+	stop()
 	if err != nil {
 		_ = os.Remove(output)
 		return Result{}, fmt.Errorf("custom command: %w: %s", err, tail(string(out)))
