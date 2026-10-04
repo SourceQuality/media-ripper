@@ -75,30 +75,41 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 		job.warn(fmt.Sprintf("%s did not take %s", client.Kind, res.DescribeRejected()))
 	}
 	move := strings.EqualFold(client.Cfg.ImportMode, "move")
+	// The command reports "completed" even when it matched nothing, so
+	// check what actually left staging after a move import.
+	left := map[string]bool{}
+	if move {
+		// Rejected files stay in staging by design; wait only for the rest.
+		var taken []Output
+		for _, o := range s.Outputs {
+			if _, rejected := res.Rejected[filepath.Base(o.Path)]; !rejected {
+				taken = append(taken, o)
+			}
+		}
+		for _, name := range stillStaged(ctx, taken) {
+			left[name] = true
+		}
+	}
 	markImports(job, func(o Output) string {
 		if reasons, ok := res.Rejected[filepath.Base(o.Path)]; ok {
 			return "not imported: " + strings.Join(reasons, "; ")
 		}
-		if move {
-			if _, err := os.Stat(o.Path); err == nil {
-				return "not imported: left in staging"
-			}
+		if left[filepath.Base(o.Path)] {
+			return "not imported: left in staging"
 		}
 		return "imported"
 	})
 	// After a move import the staging folders are empty; tidy them up to
 	// the staging root. A copy import leaves the files in place by design.
-	if strings.EqualFold(client.Cfg.ImportMode, "move") {
-		// The command reports "completed" even when it matched nothing, so
-		// check what actually left staging.
-		var left []string
-		for _, o := range s.Outputs {
-			if _, err := os.Stat(o.Path); err == nil {
-				left = append(left, filepath.Base(o.Path))
-			}
-		}
+	if move {
 		if len(left) > 0 {
-			return fmt.Errorf("imported %d of %d files; not taken: %s", len(s.Outputs)-len(left), len(s.Outputs), strings.Join(left, ", "))
+			names := make([]string, 0, len(left))
+			for _, o := range s.Outputs {
+				if left[filepath.Base(o.Path)] {
+					names = append(names, filepath.Base(o.Path))
+				}
+			}
+			return fmt.Errorf("imported %d of %d files; not taken: %s", len(s.Outputs)-len(left), len(s.Outputs), strings.Join(names, ", "))
 		}
 		staging := filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir)
 		removeEmptyUpTo(dir, staging)
@@ -236,4 +247,36 @@ func markImports(job *Job, status func(o Output) string) {
 			j.Outputs[i].Import = status(j.Outputs[i])
 		}
 	})
+}
+
+// stagedWait is how long a moved file may still appear in staging. On an
+// NFS mount the client caches what it last saw for up to 60 seconds, so a
+// file the app has already moved on the server can look present here.
+var (
+	stagedWait = 75 * time.Second
+	stagedPoll = 2 * time.Second
+)
+
+// stillStaged returns the outputs still in staging once the app has had
+// time to move them. Opening a file (rather than stat) makes an NFS client
+// revalidate it with the server.
+func stillStaged(ctx context.Context, outs []Output) []string {
+	deadline := time.Now().Add(stagedWait)
+	for {
+		var left []string
+		for _, o := range outs {
+			if f, err := os.Open(o.Path); err == nil {
+				f.Close()
+				left = append(left, filepath.Base(o.Path))
+			}
+		}
+		if len(left) == 0 || time.Now().After(deadline) {
+			return left
+		}
+		select {
+		case <-ctx.Done():
+			return left
+		case <-time.After(stagedPoll):
+		}
+	}
 }

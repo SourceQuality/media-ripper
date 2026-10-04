@@ -202,8 +202,9 @@ func TestCommonDirAndCleanup(t *testing.T) {
 // they have, the folder scan "completes" without importing, and
 // ManualImport moves exactly the files it is given. sonarrOpts tweak it.
 type sonarrOpts struct {
-	takeNothing bool   // ManualImport succeeds but moves nothing
-	reject      string // file name the preview rejects as a sample
+	takeNothing bool          // ManualImport succeeds but moves nothing
+	reject      string        // file name the preview rejects as a sample
+	moveAfter   time.Duration // the move shows up only this long after "completed"
 }
 
 func fakeSonarr(t *testing.T, root string, o sonarrOpts) *httptest.Server {
@@ -278,7 +279,12 @@ func fakeSonarr(t *testing.T, root string, o sonarrOpts) *httptest.Server {
 					t.Errorf("quality sent = %v", f.Quality)
 				}
 				if !o.takeNothing {
-					_ = os.Rename(f.Path, filepath.Join(dst, filepath.Base(f.Path)))
+					src, to := f.Path, filepath.Join(dst, filepath.Base(f.Path))
+					if o.moveAfter > 0 {
+						time.AfterFunc(o.moveAfter, func() { _ = os.Rename(src, to) })
+					} else {
+						_ = os.Rename(src, to)
+					}
 				}
 			}
 			_, _ = w.Write([]byte(`{"id":4,"status":"completed","result":"successful"}`))
@@ -356,5 +362,27 @@ func TestSonarrImportPartialRejection(t *testing.T) {
 	}
 	if status["Friends - S01E01.mkv"] != "imported" || status["Friends - S01E02.mkv"] != "not imported: Sample" {
 		t.Fatalf("import status = %v", status)
+	}
+}
+
+// On the real NAS Sonarr reported success while this machine's NFS cache
+// still showed the files in staging: that is not a failed import.
+func TestSonarrImportSeenLateIsNotAFailure(t *testing.T) {
+	e, root := sonarrEnv(t, sonarrOpts{moveAfter: 300 * time.Millisecond})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	j := e.waitDone(t)
+	if j.Stage != StageDone || len(j.Warnings) != 0 {
+		t.Fatalf("stage=%s warnings=%v", j.Stage, j.Warnings)
+	}
+	for _, o := range j.Outputs {
+		if o.Import != "imported" {
+			t.Fatalf("%s: import = %q", o.Path, o.Import)
+		}
+	}
+	if got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(got) != 2 {
+		t.Fatalf("sonarr received %d files, want 2", len(got))
 	}
 }
