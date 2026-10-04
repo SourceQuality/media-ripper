@@ -36,6 +36,7 @@ type Server struct {
 
 	mu              sync.Mutex
 	restartRequired []string
+	auth            authState
 }
 
 // Handler builds the mux.
@@ -68,7 +69,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /api/jobs/{id}/manifest", s.discManifest)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
-	return logRequests(mux, s.Logger)
+	mux.HandleFunc("GET /api/auth/status", s.authStatus)
+	mux.HandleFunc("POST /api/auth/setup", s.authSetup)
+	mux.HandleFunc("POST /api/auth/login", s.authLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.authLogout)
+	mux.HandleFunc("POST /api/auth/password", s.authPassword)
+	mux.HandleFunc("POST /api/auth/token", s.authToken)
+	mux.HandleFunc("DELETE /api/auth/token", s.authToken)
+	return logRequests(s.guard(mux), s.Logger)
 }
 
 func logRequests(h http.Handler, log *slog.Logger) http.Handler {

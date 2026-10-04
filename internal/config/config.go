@@ -87,7 +87,19 @@ type Config struct {
 	Web         Web         `yaml:"web" json:"web"`
 	Notify      Notify      `yaml:"notify" json:"notify"`
 	Updates     Updates     `yaml:"updates" json:"updates"`
+	Auth        Auth        `yaml:"auth" json:"auth"`
 	Log         Log         `yaml:"log" json:"log"`
+}
+
+// Auth protects the web UI and API with one administrator account. The
+// password is stored only as a PBKDF2 hash; API tokens only as SHA-256.
+type Auth struct {
+	Enabled      bool   `yaml:"enabled" json:"enabled"`
+	Username     string `yaml:"username" json:"username"`
+	PasswordHash string `yaml:"password_hash" json:"password_hash"`
+	// APITokenHash authorizes scripts and Prometheus (Authorization:
+	// Bearer <token>); the token itself is shown once when created.
+	APITokenHash string `yaml:"api_token_hash" json:"api_token_hash"`
 }
 
 // Updates shows a notice in the web UI when a newer release is published.
@@ -301,6 +313,7 @@ func Default() Config {
 		},
 		Notify:  Notify{Discord: Discord{ApplicationID: DefaultDiscordApp, Buttons: true}},
 		Updates: Updates{Check: true, Repo: "SourceQuality/media-ripper"},
+		Auth:    Auth{Enabled: true},
 		Metadata: Metadata{
 			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data", API: "https://thediscdb.com/graphql"},
 			Provider:  "auto",
@@ -611,7 +624,7 @@ func (c *Config) RipDir() string { return filepath.Join(c.Workspace, "rips") }
 func (c *Config) StateDir() string { return filepath.Join(c.Workspace, "state") }
 
 // SecretKeys are the dotted keys whose values never leave the server.
-var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "updates.token", "arr.radarr.api_key", "arr.sonarr.api_key"}
+var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "updates.token", "auth.password_hash", "auth.api_token_hash", "arr.radarr.api_key", "arr.sonarr.api_key"}
 
 func (c *Config) secret(key string) *string {
 	switch key {
@@ -627,6 +640,10 @@ func (c *Config) secret(key string) *string {
 		return &c.Notify.Discord.WebhookURL
 	case "updates.token":
 		return &c.Updates.Token
+	case "auth.password_hash":
+		return &c.Auth.PasswordHash
+	case "auth.api_token_hash":
+		return &c.Auth.APITokenHash
 	case "arr.radarr.api_key":
 		return &c.Arr.Radarr.APIKey
 	case "arr.sonarr.api_key":

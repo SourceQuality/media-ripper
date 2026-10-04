@@ -5,6 +5,7 @@ package store
 
 import (
 	"bufio"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -384,4 +385,24 @@ func (s *Store) Inventory(jobID string) (DiscInventory, error) {
 		return inv, err
 	}
 	return inv, json.Unmarshal(data, &inv)
+}
+
+// Secret returns a random key kept in the state folder, creating it on
+// first use (mode 0600), e.g. the key that signs session cookies.
+func (s *Store) Secret(name string, size int) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path := filepath.Join(s.dir, filepath.Base(name))
+	if data, err := os.ReadFile(path); err == nil && len(data) >= size {
+		return data[:size], nil
+	}
+	key := make([]byte, size)
+	if _, err := rand.Read(key); err != nil {
+		return nil, err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, key, 0o600); err != nil {
+		return nil, err
+	}
+	return key, os.Rename(tmp, path)
 }

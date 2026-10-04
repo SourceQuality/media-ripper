@@ -235,6 +235,16 @@ updates:
   repo: SourceQuality/media-ripper
   token: ""                 # or MR_GITHUB_TOKEN
 
+auth:
+  # Sign-in for the web UI and API. On first visit the web UI asks you to
+  # create the account; `media-ripper passwd` resets it from the command
+  # line. Scripts and Prometheus use an API token (Settings → Sign-in).
+  # Only turn this off on a network nobody else can reach.
+  enabled: true
+  username: ""
+  password_hash: ""         # set by the web UI or `media-ripper passwd`
+  api_token_hash: ""
+
 log:
   level: info          # debug | info | warn | error
   format: text         # text | json
