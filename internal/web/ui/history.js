@@ -77,6 +77,17 @@
     });
   };
 
+  // Totals since the first disc.
+  fetch('/api/stats').then(r => r.json()).then(s => {
+    const done = (s.discs.done || 0) + (s.discs.review || 0);
+    const hours = s.video_seconds / 3600;
+    const rate = s.busy_seconds > 0 ? s.bytes / s.busy_seconds / 1e6 : 0;
+    $('#stats').innerHTML = `<div class="big">${done}</div><div class="muted small">discs ripped${s.first_at ? ' since ' + new Date(s.first_at).toLocaleDateString() : ''}</div>
+      <div class="small">${s.titles} titles · ${(s.bytes / 1e9).toFixed(0)} GB · ${hours.toFixed(1)} h of video</div>
+      <div class="small">${s.verified} verified · ${s.imported} imported${s.review_pending ? ` · <strong>${s.review_pending} waiting for review</strong>` : ''}</div>
+      ${rate ? `<div class="muted small">${rate.toFixed(1)} MB/s per disc on average, start to finish</div>` : ''}`;
+  }).catch(() => {});
+
   const route = () => { renderList(); renderDetail(decodeURIComponent(location.hash.slice(1))); };
   $('#filter').oninput = renderList;
   window.addEventListener('hashchange', route);

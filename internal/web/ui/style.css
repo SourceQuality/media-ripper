@@ -71,6 +71,8 @@ td.actions { text-align: right; white-space: nowrap; }
 .chip.missing { color: var(--muted); border-style: dashed; }
 
 /* history page */
+.stats .big { font-size: 28px; font-weight: 700; line-height: 1.1; }
+.stats div + div { margin-top: 3px; }
 .history-page { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 16px; max-width: 1280px; }
 .history-page aside input { width: 100%; font: inherit; color: var(--fg); background: var(--card); border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; margin-bottom: 8px; }
 #jobs { list-style: none; margin: 0; padding: 0; }
