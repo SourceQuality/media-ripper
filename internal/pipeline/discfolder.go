@@ -282,13 +282,16 @@ func (m *Manager) folderFiles(id string) (Job, []store.FileEntry, func(p string)
 }
 
 // WriteDiscFolderNAS puts the folder under output.path/_thediscdb, with
-// the streams as sparse placeholders that take no space.
+// the streams as sparse placeholders that take no space. It is written
+// under a hidden name and renamed when complete, so a half-written folder
+// (minutes on a busy share) is never the one picked on thediscdb.com.
 func (m *Manager) WriteDiscFolderNAS(id string) (string, error) {
 	j, files, kept, err := m.folderFiles(id)
 	if err != nil {
 		return "", err
 	}
-	root := m.nasFolder(j)
+	final := m.nasFolder(j)
+	root := filepath.Join(filepath.Dir(final), ".writing-"+filepath.Base(final))
 	_ = os.RemoveAll(root)
 	for _, f := range files {
 		dst, ok := safeJoin(root, f.Path)
@@ -323,7 +326,11 @@ func (m *Manager) WriteDiscFolderNAS(id string) (string, error) {
 			_ = os.Chtimes(dst, f.Modified, f.Modified)
 		}
 	}
-	return root, nil
+	_ = os.RemoveAll(final)
+	if err := os.Rename(root, final); err != nil {
+		return "", err
+	}
+	return final, nil
 }
 
 // RemoveDiscFolderNAS deletes the copy on the share.
