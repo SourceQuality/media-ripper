@@ -157,6 +157,22 @@
   const inviteURL = appID => `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent((appID || '').trim() || DEFAULT_DISCORD_APP)}&scope=bot&permissions=19456`;
   const NON_DATA = new Set(['invite', 'action', 'password-change', 'api-token', 'tls-info']);
 
+  // What most people set; everything else is behind "Show advanced
+  // settings". A section with no basic field only appears in advanced.
+  const BASIC = new Set([
+    'drives', 'output.path', 'output.backup', 'makemkv.key',
+    'metadata.tmdb_api_key', 'metadata.thediscdb.enabled',
+    'arr.radarr.enabled', 'arr.radarr.url', 'arr.radarr.api_key', 'arr.radarr.root_folder',
+    'arr.sonarr.enabled', 'arr.sonarr.url', 'arr.sonarr.api_key', 'arr.sonarr.root_folder',
+    'arr.import_policy',
+    'notify.discord.application_id', 'discord.invite', 'notify.discord.bot_token', 'notify.discord.channel_id', 'discord.test',
+    'auth.username', 'auth.password', 'auth.token',
+  ]);
+  const slug = t => t.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const hasBasic = sec => sec.fields.some(f => BASIC.has(f.key));
+  let showAdvanced = false;
+  try { showAdvanced = localStorage.getItem('mr-settings-advanced') === '1'; } catch (e) { /* private mode */ }
+
   const get = (obj, key) => key.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const set = (obj, key, val) => { const ks = key.split('.'); let o = obj; for (const k of ks.slice(0, -1)) { o[k] = o[k] || {}; o = o[k]; } o[ks.at(-1)] = val; };
   const id = key => 'f-' + key.replace(/\./g, '-');
@@ -188,14 +204,15 @@
   const render = () => {
     const cfg = state.config;
     const env = new Set(state.env);
-    $('#settings').innerHTML = SCHEMA.map(sec => `<section class="card"><h2>${sec.title}</h2><div class="grid">${sec.fields.map(f => {
+    $('#settings').innerHTML = SCHEMA.map(sec => `<section class="card${hasBasic(sec) ? '' : ' adv'}" id="sec-${slug(sec.title)}"><h2>${sec.title}</h2><div class="grid">${sec.fields.map(f => {
       const locked = env.has(f.key);
-      return `<label class="field${f.wide ? ' wide' : ''}${f.type === 'bool' ? ' check' : ''}" for="${id(f.key)}">
+      return `<label class="field${f.wide ? ' wide' : ''}${f.type === 'bool' ? ' check' : ''}${BASIC.has(f.key) ? '' : ' adv'}" for="${id(f.key)}">
         <span class="name">${f.label}${locked ? ' <span class="tag">env</span>' : ''}${state.restart_required.includes(f.key.split('.')[0]) || state.restart_required.includes(f.key) ? ' <span class="tag warn">restart</span>' : ''}</span>
         ${control(f, get(cfg, f.key), locked)}
         ${f.hint ? `<span class="hint">${f.hint}</span>` : ''}
       </label>`;
     }).join('')}</div></section>`).join('');
+    renderNav();
     const appInput = document.getElementById(id('notify.discord.application_id'));
     const invite = document.getElementById(id('discord.invite'));
     if (appInput && invite) appInput.oninput = () => { invite.href = inviteURL(appInput.value); };
@@ -254,6 +271,31 @@
     }
     return out;
   };
+
+  // One section at a time, chosen in the sidebar (a menu on phones) and
+  // kept in the address so a reload stays put.
+  const visible = () => SCHEMA.filter(sec => showAdvanced || hasBasic(sec));
+  const current = () => {
+    const want = location.hash.slice(1);
+    const secs = visible();
+    return (secs.find(s => slug(s.title) === want) || secs[0]);
+  };
+  const renderNav = () => {
+    document.body.classList.toggle('show-adv', showAdvanced);
+    const cur = current();
+    const restart = sec => sec.fields.some(f => state.restart_required.includes(f.key) || state.restart_required.includes(f.key.split('.')[0]));
+    $('#settings-nav').innerHTML = `<label class="adv-toggle"><input type="checkbox" id="adv-toggle"${showAdvanced ? ' checked' : ''}> Show advanced settings</label>
+      <ul>${visible().map(sec => `<li><a href="#${slug(sec.title)}" class="${sec === cur ? 'sel' : ''}">${sec.title}${restart(sec) ? ' <span class="tag warn">restart</span>' : ''}</a></li>`).join('')}</ul>
+      <select id="sec-select" aria-label="Section">${visible().map(sec => `<option value="${slug(sec.title)}"${sec === cur ? ' selected' : ''}>${sec.title}</option>`).join('')}</select>`;
+    for (const el of document.querySelectorAll('#settings > section')) el.classList.toggle('active', el.id === 'sec-' + slug(cur.title));
+    $('#adv-toggle').onchange = e => {
+      showAdvanced = e.target.checked;
+      try { localStorage.setItem('mr-settings-advanced', showAdvanced ? '1' : '0'); } catch (err) { /* private mode */ }
+      renderNav();
+    };
+    $('#sec-select').onchange = e => { location.hash = e.target.value; };
+  };
+  window.addEventListener('hashchange', () => { if (state) renderNav(); });
 
   const load = () => fetch('/api/config').then(r => r.json()).then(s => { state = s; clearSecrets.clear(); render(); });
 
