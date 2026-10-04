@@ -24,6 +24,8 @@ h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: v
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .drive { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--muted); }
 .title { font-weight: 600; font-size: 16px; }
+.drive-head { margin-bottom: 4px; }
+.drive-head .model { font-size: 13px; font-weight: 600; color: var(--muted); }
 .stage { color: var(--muted); }
 .stage.done { color: var(--ok); } .stage.failed, .stage.cancelled { color: var(--bad); } .stage.skipped { color: var(--warn); }
 .bar { height: 6px; background: var(--bar); border-radius: 3px; overflow: hidden; margin-top: 10px; }

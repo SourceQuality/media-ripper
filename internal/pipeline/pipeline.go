@@ -245,6 +245,7 @@ func (m *Manager) cleanWorkspace() {
 // DriveStatus is the per-drive view for the UI.
 type DriveStatus struct {
 	Path      string `json:"path"`
+	Model     string `json:"model,omitempty"` // e.g. "HL-DT-ST BD-RE BU40N"
 	Status    string `json:"status"`
 	Label     string `json:"label,omitempty"`
 	Job       *Job   `json:"job,omitempty"`
@@ -374,7 +375,8 @@ type runner struct {
 	ignored   bool
 	// drv is read live while a job runs: the loop does not poll then, and
 	// the job ejects part-way through.
-	drv drive.Drive
+	drv   drive.Drive
+	model string
 }
 
 func (r *runner) current() *Job {
@@ -393,7 +395,7 @@ func (r *runner) force() {
 func (r *runner) status() DriveStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := DriveStatus{Path: r.path, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored}
+	s := DriveStatus{Path: r.path, Model: r.model, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored}
 	if r.job != nil && r.drv != nil {
 		if st, err := r.drv.Status(); err == nil {
 			s.Status = st.String()
@@ -417,6 +419,7 @@ func (r *runner) loop(ctx context.Context) {
 	}
 	r.mu.Lock()
 	r.drv = d
+	r.model = drive.Model(r.path)
 	r.mu.Unlock()
 	if r.m.Config().Eject.CloseTrayOnStart {
 		_ = d.CloseTray()
