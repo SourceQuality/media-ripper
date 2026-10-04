@@ -228,7 +228,19 @@ func setup(t *testing.T, infoText string, provider metadata.Provider) *env {
 		// No real disc to read; tests that need a hash set their own.
 		DiscFiles: func(string) ([]udf.File, error) { return nil, errors.New("no disc filesystem in tests") },
 	})
-	return &env{cfg: &cfg, st: st, drv: drv, m: m, info: info, out: cfg.Output.Path}
+	e := &env{cfg: &cfg, st: st, drv: drv, m: m, info: info, out: cfg.Output.Path}
+	// Tests stop Run by cancelling its context as they return; wait for it
+	// to finish writing its state before the temporary directory goes.
+	t.Cleanup(func() {
+		done := make(chan struct{})
+		go func() { e.m.running.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(30 * time.Second):
+			t.Error("Run did not stop within 30s of the test's end")
+		}
+	})
+	return e
 }
 
 func (e *env) waitDone(t *testing.T) Job {
