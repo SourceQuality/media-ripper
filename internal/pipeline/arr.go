@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sourcequality/media-ripper/internal/arr"
 	"github.com/sourcequality/media-ripper/internal/metadata"
@@ -59,12 +60,28 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 	if dir == "" {
 		return errors.New("no delivered files")
 	}
-	if err := client.Import(ctx, dir, cfg.Arr.ImportTimeout.D()); err != nil {
+	res, err := client.Import(ctx, dir, arr.ImportOptions{Wait: cfg.Arr.ImportTimeout.D(), Quality: importQuality(client.Kind, s)})
+	if err != nil {
 		return err
+	}
+	job.logf("%s imported %d file(s)", client.Kind, res.Imported)
+	if len(res.Rejected) > 0 {
+		job.warn(fmt.Sprintf("%s did not take %s", client.Kind, res.DescribeRejected()))
 	}
 	// After a move import the staging folders are empty; tidy them up to
 	// the staging root. A copy import leaves the files in place by design.
 	if strings.EqualFold(client.Cfg.ImportMode, "move") {
+		// The command reports "completed" even when it matched nothing, so
+		// check what actually left staging.
+		var left []string
+		for _, o := range s.Outputs {
+			if _, err := os.Stat(o.Path); err == nil {
+				left = append(left, filepath.Base(o.Path))
+			}
+		}
+		if len(left) > 0 {
+			return fmt.Errorf("imported %d of %d files; not taken: %s", len(s.Outputs)-len(left), len(s.Outputs), strings.Join(left, ", "))
+		}
 		staging := filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir)
 		removeEmptyUpTo(dir, staging)
 	}
@@ -119,8 +136,18 @@ func (m *Manager) ensureInLibrary(ctx context.Context, job *Job, client *arr.Cli
 		return arr.Item{}, fmt.Errorf("%s is not in the %s library and add_missing is off", pick.Title, client.Kind)
 	}
 	job.logf("adding %s to %s", pick.Title, client.Kind)
-	return client.Add(ctx, *pick)
+	added, err := client.Add(ctx, *pick)
+	if err != nil {
+		return arr.Item{}, err
+	}
+	if err := client.WaitReady(ctx, added, arrReadyWait); err != nil {
+		return arr.Item{}, err
+	}
+	return added, nil
 }
+
+// arrReadyWait bounds how long a newly added series may take to load.
+var arrReadyWait = 2 * time.Minute
 
 func absInt(n int) int {
 	if n < 0 {
@@ -159,4 +186,27 @@ func removeEmptyUpTo(dir, root string) {
 			return
 		}
 	}
+}
+
+// importQuality names the quality of a MakeMKV rip in the app's terms: a
+// Blu-ray rip is a remux (Sonarr "Bluray-1080p Remux", Radarr
+// "Remux-1080p"), a DVD rip is "DVD". Empty lets the app guess.
+func importQuality(kind arr.Kind, s Job) string {
+	if strings.HasPrefix(strings.ToLower(s.DiscType), "dvd") {
+		return "DVD"
+	}
+	if !strings.Contains(strings.ToLower(s.DiscType), "blu-ray") || s.Selection == nil || len(s.Selection.Picks) == 0 {
+		return ""
+	}
+	res := ""
+	if v := s.Selection.Picks[0].Title.Video(); v != nil {
+		res = resolutionName(v.VideoSize)
+	}
+	if res != "1080p" && res != "2160p" {
+		return ""
+	}
+	if kind == arr.Sonarr {
+		return "Bluray-" + res + " Remux"
+	}
+	return "Remux-" + res
 }

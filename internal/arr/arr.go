@@ -257,6 +257,38 @@ func (c *Client) qualityProfileID(ctx context.Context) (int, error) {
 	return 0, fmt.Errorf("%s: quality profile %q not found", c.Kind, want)
 }
 
+// WaitReady waits after Add until Sonarr has loaded the new series'
+// episodes. Sonarr fills them in with a background refresh; an import
+// started before that matches nothing and still reports "completed".
+// Radarr knows a movie as soon as it is added.
+func (c *Client) WaitReady(ctx context.Context, it Item, wait time.Duration) error {
+	if c.Kind != Sonarr || it.ID == 0 {
+		return nil
+	}
+	poll := c.Poll
+	if poll <= 0 {
+		poll = 3 * time.Second
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		eps, err := c.Episodes(ctx, it.ID)
+		if err != nil {
+			return err
+		}
+		if len(eps) > 0 {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("sonarr had not loaded the episodes of %s after %s", it.Title, wait)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
 // Episodes lists a library series' episodes (Sonarr only).
 func (c *Client) Episodes(ctx context.Context, seriesID int) ([]Episode, error) {
 	if c.Kind != Sonarr {
@@ -309,48 +341,191 @@ func (c *Client) RemotePath(local string) string {
 	return to + rest
 }
 
-// Import asks the app to import everything under dir and waits for the
-// command to finish. The app renames and moves (or copies) the files.
-func (c *Client) Import(ctx context.Context, dir string, wait time.Duration) error {
-	name := "DownloadedMoviesScan"
-	if c.Kind == Sonarr {
-		name = "DownloadedEpisodesScan"
+// ImportOptions tunes Import.
+type ImportOptions struct {
+	// Wait bounds how long the import command may run.
+	Wait time.Duration
+	// Quality names the quality to record, e.g. "Bluray-1080p Remux". The
+	// app would otherwise guess from the file name, which carries no source
+	// ("HDTV-1080p" for a Blu-ray remux). Unknown names keep the guess.
+	Quality string
+}
+
+// ImportResult says what the app took and why it left the rest.
+type ImportResult struct {
+	Imported int
+	Rejected map[string][]string // file name -> reasons
+}
+
+// Import has the app import every file under dir. It asks the app to
+// preview the folder (its manual import matching), then imports exactly
+// the matched files with a ManualImport command. The folder scan
+// (DownloadedEpisodesScan) was tried first and, on Sonarr 4, reported
+// "Failed to import" for files the preview matched cleanly, with no
+// reason logged at the default level.
+func (c *Client) Import(ctx context.Context, dir string, opts ImportOptions) (ImportResult, error) {
+	res := ImportResult{Rejected: map[string][]string{}}
+	var preview []map[string]any
+	q := url.Values{"folder": {c.RemotePath(filepath.ToSlash(dir))}, "filterExistingFiles": {"true"}}
+	if err := c.do(ctx, http.MethodGet, "/manualimport", q, nil, &preview); err != nil {
+		return res, err
 	}
-	mode := "Move"
+	quality, err := c.qualityByName(ctx, opts.Quality)
+	if err != nil {
+		return res, err
+	}
+	var files []map[string]any
+	for _, p := range preview {
+		path, _ := p["path"].(string)
+		name := filepath.Base(filepath.FromSlash(strings.ReplaceAll(path, "\\", "/")))
+		if reasons := rejections(p); len(reasons) > 0 {
+			res.Rejected[name] = reasons
+			continue
+		}
+		f := map[string]any{"path": path, "languages": p["languages"], "releaseGroup": p["releaseGroup"], "indexerFlags": p["indexerFlags"], "quality": p["quality"]}
+		if quality != nil {
+			f["quality"] = quality
+		}
+		if c.Kind == Sonarr {
+			series, _ := p["series"].(map[string]any)
+			var eps []any
+			if list, ok := p["episodes"].([]any); ok {
+				for _, e := range list {
+					if em, ok := e.(map[string]any); ok {
+						eps = append(eps, em["id"])
+					}
+				}
+			}
+			if series == nil || len(eps) == 0 {
+				res.Rejected[name] = []string{"no matching series episode"}
+				continue
+			}
+			f["seriesId"], f["episodeIds"], f["releaseType"] = series["id"], eps, p["releaseType"]
+		} else {
+			movie, _ := p["movie"].(map[string]any)
+			if movie == nil {
+				res.Rejected[name] = []string{"no matching movie"}
+				continue
+			}
+			f["movieId"] = movie["id"]
+		}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		if len(preview) == 0 {
+			return res, fmt.Errorf("%s found no video files in %s", c.Kind, q.Get("folder"))
+		}
+		return res, fmt.Errorf("%s matched none of the files: %s", c.Kind, describeRejected(res.Rejected))
+	}
+	mode := "move"
 	if strings.EqualFold(c.Cfg.ImportMode, "copy") {
-		mode = "Copy"
+		mode = "copy"
 	}
-	body := map[string]any{"name": name, "path": c.RemotePath(filepath.ToSlash(dir)), "importMode": mode}
-	var cmd struct {
-		ID     int    `json:"id"`
-		Status string `json:"status"`
+	cmd, err := c.runCommand(ctx, map[string]any{"name": "ManualImport", "files": files, "importMode": mode}, opts.Wait)
+	if err != nil {
+		return res, err
 	}
+	if strings.EqualFold(cmd.Result, "unsuccessful") {
+		return res, fmt.Errorf("%s: import %s", c.Kind, firstNonEmpty(cmd.Message, "unsuccessful"))
+	}
+	res.Imported = len(files)
+	return res, nil
+}
+
+type command struct {
+	ID      int    `json:"id"`
+	Status  string `json:"status"`
+	Result  string `json:"result"`
+	Message string `json:"message"`
+}
+
+// runCommand posts a command and waits for it to finish.
+func (c *Client) runCommand(ctx context.Context, body map[string]any, wait time.Duration) (command, error) {
+	var cmd command
 	if err := c.do(ctx, http.MethodPost, "/command", nil, body, &cmd); err != nil {
-		return err
+		return cmd, err
 	}
 	if wait <= 0 {
 		wait = 10 * time.Minute
 	}
+	poll := c.Poll
+	if poll <= 0 {
+		poll = 3 * time.Second
+	}
 	deadline := time.Now().Add(wait)
-	for time.Now().Before(deadline) {
+	for {
 		switch strings.ToLower(cmd.Status) {
 		case "completed":
-			return nil
+			return cmd, nil
 		case "failed", "aborted", "cancelled":
-			return fmt.Errorf("%s: import command %s", c.Kind, cmd.Status)
+			return cmd, fmt.Errorf("%s: %v command %s: %s", c.Kind, body["name"], cmd.Status, cmd.Message)
 		}
-		poll := c.Poll
-		if poll <= 0 {
-			poll = 3 * time.Second
+		if time.Now().After(deadline) {
+			return cmd, fmt.Errorf("%s: %v did not finish within %s", c.Kind, body["name"], wait)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return cmd, ctx.Err()
 		case <-time.After(poll):
 		}
 		if err := c.do(ctx, http.MethodGet, "/command/"+strconv.Itoa(cmd.ID), nil, nil, &cmd); err != nil {
-			return err
+			return cmd, err
 		}
 	}
-	return fmt.Errorf("%s: import did not finish within %s", c.Kind, wait)
+}
+
+// qualityByName returns the app's quality object for name, or nil to keep
+// the app's own guess when name is empty or unknown to this app.
+func (c *Client) qualityByName(ctx context.Context, name string) (map[string]any, error) {
+	if name == "" {
+		return nil, nil
+	}
+	var defs []struct {
+		Quality map[string]any `json:"quality"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/qualitydefinition", nil, nil, &defs); err != nil {
+		return nil, err
+	}
+	for _, d := range defs {
+		if n, _ := d.Quality["name"].(string); strings.EqualFold(n, name) {
+			return map[string]any{"quality": d.Quality, "revision": map[string]any{"version": 1, "real": 0, "isRepack": false}}, nil
+		}
+	}
+	return nil, nil
+}
+
+func rejections(p map[string]any) []string {
+	list, _ := p["rejections"].([]any)
+	var out []string
+	for _, r := range list {
+		if rm, ok := r.(map[string]any); ok {
+			if reason, _ := rm["reason"].(string); reason != "" {
+				out = append(out, reason)
+			}
+		}
+	}
+	return out
+}
+
+func describeRejected(m map[string][]string) string {
+	names := make([]string, 0, len(m))
+	for n := range m {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, n+" ("+strings.Join(m[n], "; ")+")")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// DescribeRejected formats rejected files for a log line or warning.
+func (r ImportResult) DescribeRejected() string { return describeRejected(r.Rejected) }
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
