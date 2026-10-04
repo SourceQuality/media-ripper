@@ -159,7 +159,8 @@
     fetch('/api/history?limit=500').then(r => r.json()).catch(() => []),
     fetch('/api/status').then(r => r.json()).catch(() => ({})),
   ]).then(([h, s]) => {
-    const live = ((s && s.drives) || []).map(d => d.job).filter(j => j && !terminal(j.stage));
+    // On a drive, or carried on after a restart without its disc.
+    const live = [...((s && s.drives) || []).map(d => d.job), ...((s && s.finishing) || [])].filter(j => j && !terminal(j.stage));
     const done = Array.isArray(h) ? h : [];
     all = [...live, ...done.filter(j => !live.some(l => l.id === j.id))];
     route();
