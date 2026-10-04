@@ -23,6 +23,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
+	"github.com/sourcequality/media-ripper/internal/updates"
 	"github.com/sourcequality/media-ripper/internal/web"
 )
 
@@ -148,7 +149,12 @@ func runDaemon(cfgPath string) error {
 	defer stop()
 
 	if cfg.Web.Enabled {
-		srv := &web.Server{Manager: m, Store: st, Version: version, Logger: log}
+		watcher := &updates.Watcher{Current: version, Logger: log, Settings: func() updates.Settings {
+			u := m.Config().Updates
+			return updates.Settings{Check: u.Check, Repo: u.Repo, Token: u.Token}
+		}}
+		go watcher.Run(ctx)
+		srv := &web.Server{Manager: m, Store: st, Version: version, Logger: log, Updates: watcher}
 		hs := &http.Server{Addr: cfg.Web.Listen, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second}
 		ln, err := net.Listen("tcp", cfg.Web.Listen)
 		if err != nil {

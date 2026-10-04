@@ -203,6 +203,14 @@ notify:
     channel_id: ""          # or MR_DISCORD_CHANNEL_ID
     webhook_url: ""         # or MR_DISCORD_WEBHOOK_URL
 
+updates:
+  # Show a notice in the web UI when a newer release is out (checked twice
+  # a day on GitHub). The repository is private for now, so a GitHub token
+  # with read access is needed; without one the check stays quiet.
+  check: true
+  repo: SourceQuality/media-ripper
+  token: ""                 # or MR_GITHUB_TOKEN
+
 log:
   level: info          # debug | info | warn | error
   format: text         # text | json

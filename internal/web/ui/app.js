@@ -223,8 +223,24 @@
     $('#recent').innerHTML = cards.length ? cards.join('') : '<div class="card empty">Nothing yet</div>';
   };
 
+  // Banners for things that need a person: storage that stopped answering,
+  // a newer release.
+  const notices = s => {
+    const out = [];
+    const st = s.storage;
+    if (st && st.state && st.state !== 'ok') {
+      const what = st.state === 'slow' ? `is slow (${(st.latency_ms / 1000).toFixed(1)} s to write a test file)` : `is ${st.state}${st.error ? ': ' + st.error : ''}`;
+      out.push(`<div class="notice ${st.state === 'slow' ? 'warn' : 'bad'}">Library storage <code>${esc(st.path)}</code> ${esc(what)}. Ripping continues; delivery waits for it.</div>`);
+    } else if (st && st.free_bytes && st.free_bytes < 100e9) {
+      out.push(`<div class="notice warn">Library storage <code>${esc(st.path)}</code> has only ${esc(fmtBytes(st.free_bytes))} free.</div>`);
+    }
+    if (s.update) out.push(`<div class="notice info">media-ripper ${esc(s.update.tag)} is available (this is ${esc(s.version)}). <a href="${esc(s.update.url)}" target="_blank" rel="noopener">Release notes</a></div>`);
+    return out.join('');
+  };
+
   const render = s => {
     $('#version').textContent = s.version || '';
+    $('#notices').innerHTML = notices(s);
     models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
     $('#drives').innerHTML = s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>';
     renderRecent();

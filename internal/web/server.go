@@ -16,6 +16,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/config"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
+	"github.com/sourcequality/media-ripper/internal/updates"
 )
 
 //go:embed ui/*
@@ -27,6 +28,7 @@ type Server struct {
 	Store   *store.Store
 	Version string
 	Logger  *slog.Logger
+	Updates *updates.Watcher
 
 	mu              sync.Mutex
 	restartRequired []string
@@ -86,6 +88,8 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"now":     time.Now(),
 		"drives":  snap.Drives,
 		"recent":  snap.Recent,
+		"storage": snap.Storage,
+		"update":  s.Updates.Available(),
 	})
 }
 

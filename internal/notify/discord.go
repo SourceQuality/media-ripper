@@ -127,6 +127,14 @@ func discordEmbed(ev Event) map[string]any {
 	case "skipped":
 		e["title"], e["color"] = "Skipped: "+name, colorGrey
 		e["description"] = ev.Error
+	case "storage":
+		if ev.Match == "recovered" {
+			e["title"], e["color"] = "Library storage is back", colorGreen
+			e["description"] = fmt.Sprintf("`%s` answers again; delivery carries on.", ev.Title)
+		} else {
+			e["title"], e["color"] = "Library storage is "+ev.Match, colorRed
+			e["description"] = fmt.Sprintf("`%s`: %s. Ripping continues; delivery waits for the share.", ev.Title, ev.Error)
+		}
 	case "test":
 		e["title"], e["color"] = "media-ripper is connected", colorBlue
 		e["description"] = "Notifications for this ripper will be posted here."

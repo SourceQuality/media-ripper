@@ -48,6 +48,12 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 tr:last-child td { border-bottom: 0; }
 td.actions { text-align: right; white-space: nowrap; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
+/* notices */
+.notice { border: 1px solid var(--line); border-left: 4px solid var(--accent); background: var(--card); border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; font-size: 14px; }
+.notice.warn { border-left-color: var(--warn); } .notice.bad { border-left-color: var(--bad); }
+.notice code { font-size: 13px; }
+.notice a { color: var(--accent); }
+
 /* recent discs */
 .history .sub, .verify { font-size: 13px; margin-top: 4px; }
 .history .outcome { margin-top: 6px; font-size: 14px; }

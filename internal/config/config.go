@@ -86,7 +86,17 @@ type Config struct {
 	Eject       Eject       `yaml:"eject" json:"eject"`
 	Web         Web         `yaml:"web" json:"web"`
 	Notify      Notify      `yaml:"notify" json:"notify"`
+	Updates     Updates     `yaml:"updates" json:"updates"`
 	Log         Log         `yaml:"log" json:"log"`
+}
+
+// Updates shows a notice in the web UI when a newer release is published.
+type Updates struct {
+	Check bool   `yaml:"check" json:"check"`
+	Repo  string `yaml:"repo" json:"repo"`
+	// Token is a GitHub token with read access, needed while the
+	// repository is private.
+	Token string `yaml:"token" json:"token"`
 }
 
 // Output controls where finished files land and how they are named.
@@ -264,7 +274,8 @@ func Default() Config {
 			Retries:       1,
 			WriteSettings: true,
 		},
-		Notify: Notify{Discord: Discord{ApplicationID: DefaultDiscordApp}},
+		Notify:  Notify{Discord: Discord{ApplicationID: DefaultDiscordApp}},
+		Updates: Updates{Check: true, Repo: "SourceQuality/media-ripper"},
 		Metadata: Metadata{
 			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data"},
 			Provider:  "auto",
@@ -411,6 +422,8 @@ func (c *Config) KeepEnvOverrides(prev *Config) {
 			c.Notify.Discord.ChannelID = prev.Notify.Discord.ChannelID
 		case "notify.discord.webhook_url":
 			c.Notify.Discord.WebhookURL = prev.Notify.Discord.WebhookURL
+		case "updates.token":
+			c.Updates.Token = prev.Updates.Token
 		case "arr.radarr.api_key":
 			c.Arr.Radarr.APIKey = prev.Arr.Radarr.APIKey
 		case "arr.sonarr.api_key":
@@ -462,6 +475,7 @@ func applyEnv(cfg *Config) {
 	set("MR_DISCORD_BOT_TOKEN", "notify.discord.bot_token", &cfg.Notify.Discord.BotToken)
 	set("MR_DISCORD_CHANNEL_ID", "notify.discord.channel_id", &cfg.Notify.Discord.ChannelID)
 	set("MR_DISCORD_WEBHOOK_URL", "notify.discord.webhook_url", &cfg.Notify.Discord.WebhookURL)
+	set("MR_GITHUB_TOKEN", "updates.token", &cfg.Updates.Token)
 	set("MR_RADARR_API_KEY", "arr.radarr.api_key", &cfg.Arr.Radarr.APIKey)
 	set("MR_SONARR_API_KEY", "arr.sonarr.api_key", &cfg.Arr.Sonarr.APIKey)
 	if v := os.Getenv("MR_DRIVES"); v != "" {
@@ -556,7 +570,7 @@ func (c *Config) RipDir() string { return filepath.Join(c.Workspace, "rips") }
 func (c *Config) StateDir() string { return filepath.Join(c.Workspace, "state") }
 
 // SecretKeys are the dotted keys whose values never leave the server.
-var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "arr.radarr.api_key", "arr.sonarr.api_key"}
+var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "updates.token", "arr.radarr.api_key", "arr.sonarr.api_key"}
 
 func (c *Config) secret(key string) *string {
 	switch key {
@@ -570,6 +584,8 @@ func (c *Config) secret(key string) *string {
 		return &c.Notify.Discord.BotToken
 	case "notify.discord.webhook_url":
 		return &c.Notify.Discord.WebhookURL
+	case "updates.token":
+		return &c.Updates.Token
 	case "arr.radarr.api_key":
 		return &c.Arr.Radarr.APIKey
 	case "arr.sonarr.api_key":

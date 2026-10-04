@@ -73,6 +73,7 @@ type Manager struct {
 	mu      sync.Mutex
 	recent  []*Job
 	started time.Time
+	storage storageMonitor
 }
 
 // New builds a manager. Drives are opened lazily by Run.
@@ -191,6 +192,11 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		m.watchStorage(ctx)
+	}()
 	seen := map[string]bool{}
 	startRunner := func(p string) {
 		if seen[p] {
@@ -273,9 +279,10 @@ type DriveStatus struct {
 
 // Snapshot is the whole system state for the UI.
 type Snapshot struct {
-	Drives  []DriveStatus `json:"drives"`
-	Recent  []Job         `json:"recent"`
-	Started time.Time     `json:"started"`
+	Drives  []DriveStatus  `json:"drives"`
+	Recent  []Job          `json:"recent"`
+	Started time.Time      `json:"started"`
+	Storage *StorageStatus `json:"storage,omitempty"`
 }
 
 // Snapshot returns the current state.
@@ -289,6 +296,9 @@ func (m *Manager) Snapshot() Snapshot {
 		s.Drives = append(s.Drives, r.status())
 	}
 	sort.Slice(s.Drives, func(i, j int) bool { return s.Drives[i].Path < s.Drives[j].Path })
+	if st := m.storage.get(); st.State != "" {
+		s.Storage = &st
+	}
 	for i := len(recent) - 1; i >= 0; i-- {
 		s.Recent = append(s.Recent, recent[i].Snapshot())
 	}
@@ -586,6 +596,12 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	rs := openResume(workDir, job, cfg.Output.Resume)
 	if rs.resumable() {
 		job.logf("resuming: reusing titles ripped or delivered by an earlier attempt")
+	}
+	if warning, err := checkSpace(workDir, cfg.Output.Path, sel, rs); err != nil {
+		m.fail(job, fmt.Errorf("not enough space: %w", err))
+		return
+	} else if warning != "" {
+		job.logf("%s", warning)
 	}
 	job.rt.notifier.Send(ctx, m.event(job, "started"))
 
