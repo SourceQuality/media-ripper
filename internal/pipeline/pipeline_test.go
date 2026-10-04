@@ -210,6 +210,8 @@ func setup(t *testing.T, infoText string, provider metadata.Provider) *env {
 		Notifier:  &notify.Notifier{},
 		Logger:    log,
 		OpenDrive: func(string) (drive.Drive, error) { return drv, nil },
+		// No real disc to read; tests that need a hash set their own.
+		ContentHash: func(string) (string, error) { return "", errors.New("no disc filesystem in tests") },
 	})
 	return &env{cfg: &cfg, st: st, drv: drv, m: m, info: info, out: cfg.Output.Path}
 }
@@ -751,9 +753,14 @@ func TestRemuxActivity(t *testing.T) {
 }
 
 type fakeCatalog struct {
-	match *discdb.Match
-	err   error
-	calls int
+	match  *discdb.Match
+	err    error
+	calls  int
+	byHash map[string]*discdb.HashMatch
+}
+
+func (f *fakeCatalog) FindByHash(_ context.Context, hash string, scan []discdb.ScanTitle) (*discdb.HashMatch, error) {
+	return f.byHash[hash], nil
 }
 
 func (f *fakeCatalog) Find(_ context.Context, kind discdb.Kind, title string, year int, scan []discdb.ScanTitle) (*discdb.Match, error) {
@@ -895,5 +902,60 @@ func TestVerification(t *testing.T) {
 		if got := verification(c.job); got != c.want {
 			t.Errorf("%s:\n got  %q\n want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// A disc whose label says nothing is identified by its content hash, and
+// counts as verified: it is that exact catalogued disc.
+func TestHashIdentifiesJunkLabel(t *testing.T) {
+	e := setup(t, strings.ReplaceAll(movieInfo, "THE_MATRIX", "BD_ROM"), metadata.NoneProvider{})
+	e.m.deps.ContentHash = func(string) (string, error) { return "ABC123", nil }
+	e.m.deps.Catalog = &fakeCatalog{byHash: map[string]*discdb.HashMatch{"ABC123": {
+		Kind: discdb.Movie, Title: "The Matrix", Year: 1999, TMDBID: 603,
+		Match: discdb.Match{Release: "1999-blu-ray", Disc: discdb.Disc{Name: "Disc 1", ContentHash: "ABC123"}, Matched: 2, Compared: 3,
+			ByID: map[int]discdb.Title{0: {Item: &discdb.Item{Type: "MainMovie"}}, 1: {Item: &discdb.Item{Type: "Extra", Title: "Decoy cut"}}}},
+	}}}
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-junk", "BD_ROM")
+	j := e.waitDone(t)
+	if j.Stage != StageDone || j.Identity.Title != "The Matrix" || j.Identity.Source != "thediscdb" {
+		t.Fatalf("stage=%s identity=%+v", j.Stage, j.Identity)
+	}
+	if len(j.Selection.Picks) != 1 || j.Selection.Picks[0].Title.ID != 0 {
+		t.Fatalf("picks = %+v", j.Selection.Picks)
+	}
+	if !j.HashMatched || !strings.Contains(j.Verification, "this exact disc") {
+		t.Fatalf("verification = %q hash=%v", j.Verification, j.HashMatched)
+	}
+	want := filepath.Join(e.out, "Movies", "The Matrix (1999)", "The Matrix (1999).mkv")
+	if len(j.Outputs) != 1 || j.Outputs[0].Path != want {
+		t.Fatalf("outputs = %+v", j.Outputs)
+	}
+}
+
+// A title match whose catalogued content hash equals the disc's is the
+// strongest verification, even when not every title compared.
+func TestHashConfirmsTitleMatch(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, Season: 1, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "sonarr"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	e.m.deps.ContentHash = func(string) (string, error) { return "FEEDF00D", nil }
+	e.m.deps.Catalog = &fakeCatalog{match: &discdb.Match{Release: "season-1-dvd", Disc: discdb.Disc{Name: "Disc 1", ContentHash: "feedf00d"}, Matched: 2, Compared: 4, ByID: map[int]discdb.Title{
+		1: {Item: &discdb.Item{Type: "Episode", Title: "Pilot", Season: 1, Episode: 1}},
+		2: {Item: &discdb.Item{Type: "Episode", Title: "Two", Season: 1, Episode: 2}},
+	}}}
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	j := e.waitDone(t)
+	if !j.HashMatched || !strings.HasPrefix(j.Verification, "✅ Verified by TheDiscDB: this exact disc") {
+		t.Fatalf("verification = %q", j.Verification)
+	}
+	if needsReview(j, e.m.rt.Load()) {
+		t.Fatal("a hash-verified disc should not wait for review")
 	}
 }

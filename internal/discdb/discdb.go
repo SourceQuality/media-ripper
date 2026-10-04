@@ -11,6 +11,7 @@
 package discdb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -109,6 +110,7 @@ type Client struct {
 	TreeTTL  time.Duration // how long a tree listing is reused
 	HTTP     *http.Client
 	Logger   *slog.Logger
+	API      string // GraphQL endpoint for content-hash lookups
 
 	apiBase, rawBase string // overridden in tests
 }
@@ -383,4 +385,114 @@ func (c *Client) log() *slog.Logger {
 		return c.Logger
 	}
 	return slog.Default()
+}
+
+// HashMatch is a disc found on thediscdb.com by its content hash, so it is
+// identified even when the label says nothing.
+type HashMatch struct {
+	Kind   Kind
+	Title  string
+	Year   int
+	TMDBID int
+	Match  // the catalogued disc and how the scanned titles map onto it
+}
+
+// DefaultAPI is TheDiscDB's public GraphQL endpoint.
+const DefaultAPI = "https://thediscdb.com/graphql"
+
+const hashQuery = `query ($hash: String) {
+  mediaItems(where: { releases: { some: { discs: { some: { contentHash: { eq: $hash } } } } } }) {
+    nodes {
+      title year type externalids { tmdb }
+      releases { slug discs { index name slug contentHash
+        titles { index sourceFile size item { title type season episode } } } }
+    }
+  }
+}`
+
+// FindByHash asks thediscdb.com which disc has this content hash. It
+// returns nil without error when the disc is not catalogued.
+func (c *Client) FindByHash(ctx context.Context, hash string, scan []ScanTitle) (*HashMatch, error) {
+	api := c.API
+	if api == "" {
+		api = DefaultAPI
+	}
+	body, _ := json.Marshal(map[string]any{"query": hashQuery, "variables": map[string]string{"hash": hash}})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, api, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "media-ripper")
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("thediscdb.com: %w", err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("thediscdb.com: %s", resp.Status)
+	}
+	var out struct {
+		Data struct {
+			MediaItems struct {
+				Nodes []struct {
+					Title       string `json:"title"`
+					Year        int    `json:"year"`
+					Type        string `json:"type"`
+					ExternalIDs struct {
+						TMDB flexInt `json:"tmdb"`
+					} `json:"externalids"`
+					Releases []struct {
+						Slug  string `json:"slug"`
+						Discs []struct {
+							Index       int    `json:"index"`
+							Name        string `json:"name"`
+							Slug        string `json:"slug"`
+							ContentHash string `json:"contentHash"`
+							Titles      []struct {
+								Index      int    `json:"index"`
+								SourceFile string `json:"sourceFile"`
+								Size       int64  `json:"size"`
+								Item       *Item  `json:"item"`
+							} `json:"titles"`
+						} `json:"discs"`
+					} `json:"releases"`
+				} `json:"nodes"`
+			} `json:"mediaItems"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil, fmt.Errorf("thediscdb.com: %w", err)
+	}
+	if len(out.Errors) > 0 {
+		return nil, fmt.Errorf("thediscdb.com: %s", out.Errors[0].Message)
+	}
+	for _, n := range out.Data.MediaItems.Nodes {
+		for _, r := range n.Releases {
+			for _, d := range r.Discs {
+				if !strings.EqualFold(d.ContentHash, hash) {
+					continue
+				}
+				disc := Disc{Index: d.Index, Slug: d.Slug, Name: d.Name, ContentHash: d.ContentHash}
+				for _, t := range d.Titles {
+					disc.Titles = append(disc.Titles, Title{Index: t.Index, SourceFile: t.SourceFile, Size: t.Size, Item: t.Item})
+				}
+				m := score(&disc, scan)
+				if m == nil {
+					m = &Match{Disc: disc, ByID: map[int]Title{}}
+				}
+				m.Release = r.Slug
+				kind := Series
+				if strings.Contains(strings.ToLower(n.Type), "movie") {
+					kind = Movie
+				}
+				return &HashMatch{Kind: kind, Title: n.Title, Year: n.Year, TMDBID: int(n.ExternalIDs.TMDB), Match: *m}, nil
+			}
+		}
+	}
+	return nil, nil
 }

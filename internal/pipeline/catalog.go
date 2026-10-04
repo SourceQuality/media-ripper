@@ -19,8 +19,13 @@ const catalogLookupTimeout = 90 * time.Second
 // catalogEntries looks the identified disc up in TheDiscDB and returns what
 // it says each scanned title is, or nil to fall back to the usual rules.
 // Lookup problems are logged and never fail the job.
-func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Disc, id *metadata.Identity) (map[int]selector.CatalogEntry, string) {
+// When the disc was already found by its content hash (byHash), that match
+// is used as it is.
+func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Disc, id *metadata.Identity, byHash *discdb.Match) (map[int]selector.CatalogEntry, string) {
 	cat := job.rt.catalog
+	if byHash != nil {
+		return m.useMatch(job, byHash), "TheDiscDB"
+	}
 	if cat == nil || id == nil || !id.Identified() {
 		return nil, ""
 	}
@@ -32,13 +37,9 @@ func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Di
 	default:
 		return nil, ""
 	}
-	scan := make([]discdb.ScanTitle, 0, len(disc.Titles))
-	for _, t := range disc.Titles {
-		scan = append(scan, discdb.ScanTitle{ID: t.ID, SourceFile: t.SourceFile, Size: t.SizeBytes})
-	}
 	ctx, cancel := context.WithTimeout(ctx, catalogLookupTimeout)
 	defer cancel()
-	match, err := cat.Find(ctx, kind, id.Title, id.Year, scan)
+	match, err := cat.Find(ctx, kind, id.Title, id.Year, scanTitles(disc))
 	switch {
 	case err != nil:
 		job.logf("thediscdb: %v; choosing titles by length", err)
@@ -48,10 +49,20 @@ func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Di
 		job.logf("thediscdb: no catalogued disc of %s matches; choosing titles by length", id.Title)
 		return nil, ""
 	}
-	job.logf("thediscdb: %s, %s (%d of %d titles match)", match.Release, match.Disc.Name, match.Matched, match.Compared)
+	return m.useMatch(job, match), "TheDiscDB"
+}
+
+// useMatch records a catalogue match on the job and returns what it says
+// each scanned title is. A content hash equal to the catalogued disc's
+// proves it is that exact pressing.
+func (m *Manager) useMatch(job *Job, match *discdb.Match) map[int]selector.CatalogEntry {
+	s := job.Snapshot()
+	sameDisc := s.ContentHash != "" && strings.EqualFold(s.ContentHash, match.Disc.ContentHash)
+	job.logf("thediscdb: %s, %s (%d of %d titles match%s)", match.Release, match.Disc.Name, match.Matched, match.Compared, map[bool]string{true: "; content hash matches", false: ""}[sameDisc])
 	job.set(func(j *Job) {
 		j.Catalog = fmt.Sprintf("TheDiscDB (%s, %s)", releaseName(match.Release), match.Disc.Name)
 		j.CatalogMatched, j.CatalogCompared = match.Matched, match.Compared
+		j.HashMatched = sameDisc
 	})
 	entries := map[int]selector.CatalogEntry{}
 	for tid, t := range match.ByID {
@@ -61,7 +72,50 @@ func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Di
 		}
 		entries[tid] = e
 	}
-	return entries, "TheDiscDB"
+	return entries
+}
+
+// identifyByHash asks TheDiscDB which disc has this content hash, for discs
+// the label could not identify. thediscdb.com being unreachable (often a
+// DNS filter) is logged once per job and the usual rules carry on.
+func (m *Manager) identifyByHash(ctx context.Context, job *Job, disc *makemkv.Disc, hint metadata.Hint) (*metadata.Identity, *discdb.Match) {
+	cat := job.rt.catalog
+	hash := job.Snapshot().ContentHash
+	if cat == nil || hash == "" {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, catalogLookupTimeout)
+	defer cancel()
+	hm, err := cat.FindByHash(ctx, hash, scanTitles(disc))
+	switch {
+	case err != nil:
+		job.logf("thediscdb: content hash lookup failed (%v); allow thediscdb.com through your DNS filter to identify discs by content", err)
+		return nil, nil
+	case hm == nil:
+		job.logf("thediscdb: content hash %s is not catalogued", hash)
+		return nil, nil
+	}
+	id := &metadata.Identity{Title: hm.Title, Year: hm.Year, TMDBID: hm.TMDBID, Confidence: 1, Source: "thediscdb", Hint: hint, Kind: metadata.KindMovie}
+	if hm.Kind == discdb.Series {
+		id.Kind = metadata.KindTV
+		for _, t := range hm.ByID {
+			if t.Item != nil && t.Item.Season > 0 {
+				id.Season = int(t.Item.Season)
+				break
+			}
+		}
+	}
+	job.logf("thediscdb: content hash identifies %s (%d)", hm.Title, hm.Year)
+	match := hm.Match
+	return id, &match
+}
+
+func scanTitles(disc *makemkv.Disc) []discdb.ScanTitle {
+	scan := make([]discdb.ScanTitle, 0, len(disc.Titles))
+	for _, t := range disc.Titles {
+		scan = append(scan, discdb.ScanTitle{ID: t.ID, SourceFile: t.SourceFile, Size: t.SizeBytes})
+	}
+	return scan
 }
 
 // releaseName turns a release folder slug into words:

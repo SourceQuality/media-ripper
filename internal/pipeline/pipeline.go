@@ -26,6 +26,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/postprocess"
 	"github.com/sourcequality/media-ripper/internal/selector"
 	"github.com/sourcequality/media-ripper/internal/store"
+	"github.com/sourcequality/media-ripper/internal/udf"
 )
 
 // Deps are the collaborators the pipeline needs. MakeMKV, Metadata and
@@ -44,6 +45,9 @@ type Deps struct {
 	OCRTools []string
 	// Catalog replaces TheDiscDB (tests).
 	Catalog Catalog
+	// ContentHash computes a disc's TheDiscDB content hash from its file
+	// sizes (tests replace the UDF reader).
+	ContentHash func(device string) (string, error)
 }
 
 // runtime is one immutable configuration generation with the components
@@ -62,6 +66,7 @@ type runtime struct {
 // Catalog finds the catalogued disc that matches a scan (TheDiscDB).
 type Catalog interface {
 	Find(ctx context.Context, kind discdb.Kind, title string, year int, scan []discdb.ScanTitle) (*discdb.Match, error)
+	FindByHash(ctx context.Context, hash string, scan []discdb.ScanTitle) (*discdb.HashMatch, error)
 }
 
 // Manager owns one runner per drive.
@@ -166,7 +171,7 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 		rt.catalog = m.deps.Catalog
 	case cfg.Metadata.TheDiscDB.Enabled:
 		c := discdb.New(cfg.Metadata.TheDiscDB.Repo, filepath.Join(cfg.StateDir(), "thediscdb"))
-		c.Logger = m.log
+		c.Logger, c.API = m.log, cfg.Metadata.TheDiscDB.API
 		rt.catalog = c
 	}
 	if rt.notifier == nil {
@@ -850,6 +855,8 @@ type historyEntry struct {
 	Catalog      string              `json:"catalog,omitempty"`
 	Matched      int                 `json:"catalog_matched,omitempty"`
 	Compared     int                 `json:"catalog_compared,omitempty"`
+	Hash         string              `json:"content_hash,omitempty"`
+	HashOK       bool                `json:"hash_matched,omitempty"`
 	Verification string              `json:"verification,omitempty"`
 	Warnings     []string            `json:"warnings,omitempty"`
 }
@@ -857,7 +864,8 @@ type historyEntry struct {
 func historyRecord(s Job) historyEntry {
 	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
 		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles,
-		Catalog: s.Catalog, Matched: s.CatalogMatched, Compared: s.CatalogCompared, Verification: s.Verification, Warnings: s.Warnings}
+		Catalog: s.Catalog, Matched: s.CatalogMatched, Compared: s.CatalogCompared, Hash: s.ContentHash, HashOK: s.HashMatched,
+		Verification: s.Verification, Warnings: s.Warnings}
 	if s.Identity != nil {
 		h.Kind = string(s.Identity.Kind)
 	}
@@ -933,6 +941,8 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 		job.logf("  title %d: %s, %d chapters, %d audio, %d subs, %s", t.ID, t.Duration.Round(time.Second), t.Chapters, t.AudioCount(), t.SubtitleCount(), t.Size)
 	}
 
+	m.hashDisc(job)
+
 	// 2. Identify.
 	job.setStage(StageIdentifying, "looking up "+label)
 	hint := metadata.ParseLabel(applyOverride(cfg, label))
@@ -953,6 +963,13 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 	}
 	if id == nil {
 		id = &metadata.Identity{Kind: metadata.KindUnknown, Hint: hint}
+	}
+	// A label that says nothing ("BD_ROM"): the disc's content still can.
+	var byHash *discdb.Match
+	if !id.Identified() {
+		if hid, hm := m.identifyByHash(ctx, job, disc, hint); hid != nil {
+			id, byHash = hid, hm
+		}
 	}
 	if id.Season == 0 && hint.Season > 0 {
 		id.Season = hint.Season
@@ -983,7 +1000,7 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 	var sel *selector.Selection
 	if isConfirmed && len(confirmed.Episodes) > 0 {
 		sel, err = selector.SelectFromCatalog(disc, id, confirmedEntries(confirmed), "Confirmed")
-	} else if entries, source := m.catalogEntries(ctx, job, disc, id); entries != nil {
+	} else if entries, source := m.catalogEntries(ctx, job, disc, id, byHash); entries != nil {
 		sel, err = selector.SelectFromCatalog(disc, id, entries, source)
 		adoptCatalogSeason(job, id, sel)
 	} else {
@@ -1374,6 +1391,9 @@ func verification(s Job) string {
 	}
 	if s.Catalog != "" {
 		catalog := strings.TrimSuffix(strings.TrimPrefix(s.Catalog, "TheDiscDB ("), ")")
+		if s.HashMatched {
+			return fmt.Sprintf("✅ Verified by TheDiscDB: this exact disc (content hash), %s", catalog)
+		}
 		if s.CatalogMatched > 0 && s.CatalogMatched == s.CatalogCompared {
 			return fmt.Sprintf("✅ Verified by TheDiscDB: all %d titles match %s", s.CatalogMatched, catalog)
 		}
@@ -1452,4 +1472,41 @@ func destPath(cfg *config.Config, rt *runtime, s Job, pick selector.Pick, ext st
 		sub = cfg.Arr.StagingSubdir
 	}
 	return filepath.Join(cfg.Output.Path, sub, rel), nil
+}
+
+// hashDisc computes the disc's TheDiscDB content hash from its file
+// inventory, read straight from the device's UDF filesystem. It runs after
+// MakeMKV's scan so the two never read the drive at once; a failure only
+// means the hash is not available.
+func (m *Manager) hashDisc(job *Job) {
+	fn := m.deps.ContentHash
+	if fn == nil {
+		fn = func(device string) (string, error) {
+			files, err := udf.ListDevice(device)
+			if err != nil {
+				return "", err
+			}
+			return udf.ContentHash(files)
+		}
+	}
+	type result struct {
+		hash string
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		h, err := fn(job.Drive)
+		done <- result{h, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			job.logf("content hash: %v", r.err)
+			return
+		}
+		job.set(func(j *Job) { j.ContentHash = r.hash })
+		job.logf("content hash %s", r.hash)
+	case <-time.After(time.Minute):
+		job.logf("content hash: the disc's file list took over a minute; skipped")
+	}
 }
