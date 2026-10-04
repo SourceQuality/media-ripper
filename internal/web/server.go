@@ -113,13 +113,14 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	snap := s.Manager.Snapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"version": s.Version,
-		"started": snap.Started,
-		"now":     time.Now(),
-		"drives":  snap.Drives,
-		"recent":  snap.Recent,
-		"storage": snap.Storage,
-		"update":  s.Updates.Available(),
+		"version":   s.Version,
+		"started":   snap.Started,
+		"now":       time.Now(),
+		"drives":    snap.Drives,
+		"recent":    snap.Recent,
+		"finishing": snap.Finishing,
+		"storage":   snap.Storage,
+		"update":    s.Updates.Available(),
 	})
 }
 
