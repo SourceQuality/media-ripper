@@ -19,6 +19,9 @@ jobs:
   build:
     needs: test
     runs-on: ubuntu-latest
+    # Creating the GitHub Release on a v* tag needs write access to contents.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
