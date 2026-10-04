@@ -271,6 +271,7 @@ func selectTV(disc *makemkv.Disc, id *metadata.Identity, opts Options, sel *Sele
 		filtered = append(filtered, c)
 	}
 	cands = filtered
+	cands = dropLowBitrate(cands, sel)
 	if len(cands) == 0 {
 		sel.Notes = append(sel.Notes, "no titles match the episode length")
 		return
@@ -328,6 +329,48 @@ func episodeTitle(id *metadata.Identity, n int) string {
 type cand struct {
 	t      *makemkv.Title
 	double bool
+}
+
+// lowBitrateRatio is how far below the episodes' median bitrate a title may
+// fall before it is treated as an extra. Episodes of one season are encoded
+// alike; a standard-definition bonus feature that happens to be
+// episode-length is several times smaller (5.5 vs 25 Mbps on The Twilight
+// Zone S1 Blu-ray).
+const lowBitrateRatio = 0.4
+
+// dropLowBitrate removes candidates whose bitrate is far below the median of
+// the others. It needs at least three titles of known size to judge.
+func dropLowBitrate(cands []cand, sel *Selection) []cand {
+	rate := func(t *makemkv.Title) float64 {
+		if t.SizeBytes <= 0 || t.Duration <= 0 {
+			return 0
+		}
+		return float64(t.SizeBytes) * 8 / t.Duration.Seconds()
+	}
+	var rates []float64
+	for _, c := range cands {
+		if r := rate(c.t); r > 0 {
+			rates = append(rates, r)
+		}
+	}
+	if len(rates) < 3 {
+		return cands
+	}
+	sort.Float64s(rates)
+	median := rates[len(rates)/2]
+	if len(rates)%2 == 0 {
+		median = (rates[len(rates)/2-1] + rates[len(rates)/2]) / 2
+	}
+	out := cands[:0]
+	for _, c := range cands {
+		if r := rate(c.t); r > 0 && r < median*lowBitrateRatio {
+			sel.Skipped = append(sel.Skipped, Skipped{TitleID: c.t.ID, Duration: c.t.Duration,
+				Reason: fmt.Sprintf("bitrate %.1f Mbps far below the episodes' %.1f Mbps; likely an extra", r/1e6, median/1e6)})
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func isPlayAll(t *makemkv.Title, cands []cand, idx int, total time.Duration) bool {

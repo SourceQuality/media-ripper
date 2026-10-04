@@ -1,6 +1,7 @@
 package selector
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -149,5 +150,70 @@ func TestUnidentified(t *testing.T) {
 	sel, _ = Select(tv, nil, Options{})
 	if len(sel.Picks) != 4 || sel.Picks[0].Episode != 1 {
 		t.Fatalf("unidentified tv: %+v", sel.Picks)
+	}
+}
+
+// The Twilight Zone S1 D1 Blu-ray, as MakeMKV reported it: seven episodes at
+// about 25 Mbps and an episode-length SD extra at 5.5 Mbps.
+func TestTVDropsLowBitrateExtra(t *testing.T) {
+	gb := func(g float64) int64 { return int64(g * 1e9) }
+	sized := func(id int, d time.Duration, ch int, src string, size int64) *makemkv.Title {
+		tt := title(id, d, ch, []int{id + 100}, src)
+		tt.SizeBytes = size
+		return tt
+	}
+	ep := 25*time.Minute + 54*time.Second
+	disc := &makemkv.Disc{Type: "Blu-ray disc", Titles: []*makemkv.Title{
+		sized(0, ep, 5, "00010.mpls", gb(4.58)),
+		sized(1, 34*time.Minute+42*time.Second, 4, "00011.mpls", gb(1.43)),
+		sized(2, 26*time.Minute, 5, "00005.mpls", gb(4.86)),
+		sized(3, ep, 5, "00004.mpls", gb(5.34)),
+		sized(4, ep, 5, "00003.mpls", gb(4.83)),
+		sized(5, ep, 5, "00002.mpls", gb(4.89)),
+		sized(6, ep, 5, "00001.mpls", gb(4.89)),
+		sized(7, ep, 5, "00000.mpls", gb(4.87)),
+		sized(8, 2*time.Minute+8*time.Second, 1, "00012.mpls", gb(0.3)),
+		sized(9, 5*time.Minute+27*time.Second, 1, "00013.mpls", gb(0.6)),
+	}}
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "The Twilight Zone", Season: 1, EpisodeRuntime: 28 * time.Minute}
+	sel, err := Select(disc, id, Options{NextEpisode: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{7, 6, 5, 4, 3, 2, 0}
+	if len(sel.Picks) != len(want) {
+		t.Fatalf("picks = %d, want %d: %+v", len(sel.Picks), len(want), sel.Picks)
+	}
+	for i, p := range sel.Picks {
+		if p.Title.ID != want[i] || p.Episode != i+1 {
+			t.Fatalf("pick %d = title %d E%d, want title %d E%d", i, p.Title.ID, p.Episode, want[i], i+1)
+		}
+	}
+	if sel.NextEpisode != 8 {
+		t.Fatalf("next = %d, want 8", sel.NextEpisode)
+	}
+	found := false
+	for _, s := range sel.Skipped {
+		if s.TitleID == 1 && strings.Contains(s.Reason, "bitrate") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("title 1 not skipped for bitrate: %+v", sel.Skipped)
+	}
+}
+
+// Ordinary variation between episodes must not trip the bitrate check.
+func TestTVKeepsNormalBitrateSpread(t *testing.T) {
+	ep := 44 * time.Minute
+	var titles []*makemkv.Title
+	for i, g := range []float64{6.1, 9.8, 7.4, 5.2} {
+		tt := title(i, ep, 6, []int{i + 1}, "")
+		tt.SizeBytes = int64(g * 1e9)
+		titles = append(titles, tt)
+	}
+	sel, _ := Select(&makemkv.Disc{Titles: titles}, &metadata.Identity{Kind: metadata.KindTV, Title: "x", Season: 1, EpisodeRuntime: ep}, Options{NextEpisode: 1})
+	if len(sel.Picks) != 4 {
+		t.Fatalf("picks = %d: %+v", len(sel.Picks), sel.Skipped)
 	}
 }
