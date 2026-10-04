@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,5 +223,46 @@ func TestWantFolderAndSafeJoin(t *testing.T) {
 	}
 	if p, ok := safeJoin("/root", "BDMV/index.bdmv"); !ok || p != "/root/BDMV/index.bdmv" {
 		t.Fatalf("%q %v", p, ok)
+	}
+}
+
+type roundTrip func(*http.Request) (*http.Response, error)
+
+func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// The kept log goes to the address in the command thediscdb.com shows,
+// and its answer comes back.
+func TestSendScanLog(t *testing.T) {
+	e := matrixEnv(t)
+	if err := os.MkdirAll(filepath.Dir(e.m.logFile("j1")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(e.m.logFile("j1"), []byte("TCOUNT:101\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var got *http.Request
+	var body []byte
+	e.m.deps.HTTPClient = &http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
+		got, body = r, nil
+		body, _ = io.ReadAll(r.Body)
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"ok":true}`)), Header: http.Header{}}, nil
+	})}
+	cmd := `makemkvcon --minlength=0 --robot info disc:0 2>&1 | curl -X POST -H "Content-Type: text/plain" --data-binary @- https://thediscdb.com/api/contribute/OE9/discs/Yyj/logs`
+	code, answer, err := e.m.SendScanLog(context.Background(), "j1", cmd)
+	if err != nil || code != 200 || answer != `{"ok":true}` {
+		t.Fatalf("send: %d %q %v", code, answer, err)
+	}
+	if got.Method != http.MethodPost || got.URL.String() != "https://thediscdb.com/api/contribute/OE9/discs/Yyj/logs" ||
+		got.Header.Get("Content-Type") != "text/plain" || string(body) != "TCOUNT:101\n" {
+		t.Fatalf("request: %s %s %q %q", got.Method, got.URL, got.Header.Get("Content-Type"), body)
+	}
+	// Only TheDiscDB's log address is accepted, and only a kept log is sent.
+	for _, bad := range []string{"https://example.com/api/contribute/a/discs/b/logs", "http://thediscdb.com/api/contribute/a/discs/b/logs", "nothing"} {
+		if _, _, err := e.m.SendScanLog(context.Background(), "j1", bad); !errors.Is(err, ErrLogURL) {
+			t.Fatalf("%q: %v", bad, err)
+		}
+	}
+	if _, _, err := e.m.SendScanLog(context.Background(), "nope", cmd); !errors.Is(err, ErrNoScanLog) {
+		t.Fatalf("no log: %v", err)
 	}
 }

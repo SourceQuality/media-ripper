@@ -81,7 +81,7 @@
     }
     if (f.log) {
       parts.push(`<h3>2. The MakeMKV log</h3>
-        <p class="small">When thediscdb.com shows a <code>makemkvcon … | curl … /logs</code> command, paste it (or just its address) here: your browser sends the log media-ripper kept.</p>
+        <p class="small">When thediscdb.com shows a <code>makemkvcon … | curl … /logs</code> command, paste it (or just its address) here: media-ripper sends the log it kept and shows TheDiscDB's answer.</p>
         <div class="row actions-row"><input id="log-url" type="text" placeholder="https://thediscdb.com/api/contribute/…/discs/…/logs" autocomplete="off">
           <button class="primary" data-log="send">Send to TheDiscDB</button>
           <a class="btn" href="/api/jobs/${encodeURIComponent(id)}/makemkv-log?download=1" download>Download log</a></div>
@@ -153,11 +153,21 @@
         const out = $('#log-status'), url = logURL($('#log-url').value);
         if (!url) { out.textContent = 'Paste the command or address thediscdb.com shows (https://thediscdb.com/api/contribute/…/logs).'; return; }
         send.disabled = true; out.textContent = 'Sending…';
-        fetch(`/api/jobs/${encodeURIComponent(id)}/makemkv-log`).then(r => { if (!r.ok) throw new Error('the log is not available'); return r.text(); })
-          // TheDiscDB does not let other sites read its answer, so the
-          // request is sent blind; its page moves on when the log arrives.
+        // media-ripper sends it, so TheDiscDB's answer can be shown. Only
+        // when the ripper cannot reach thediscdb.com does the browser send
+        // it, blind: TheDiscDB does not let other sites read its answer.
+        const blind = () => fetch(`/api/jobs/${encodeURIComponent(id)}/makemkv-log`)
+          .then(r => { if (!r.ok) throw new Error('the log is not available'); return r.text(); })
           .then(log => fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: log }))
-          .then(() => { out.textContent = 'Sent. thediscdb.com should move to the next step within a few seconds.'; })
+          .then(() => { out.textContent = 'media-ripper could not reach thediscdb.com, so your browser sent the log. Check that the site moved to the next step.'; });
+        fetch(`/api/jobs/${encodeURIComponent(id)}/makemkv-log/send`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) })
+          .then(async r => {
+            const res = await r.json();
+            if (r.status === 502) return blind();
+            if (res.error) throw new Error(res.error);
+            out.textContent = res.ok ? `TheDiscDB accepted the log (HTTP ${res.status}). Its page should move to the next step.`
+              : `TheDiscDB answered HTTP ${res.status}${res.answer ? ': ' + res.answer : ''}`;
+          })
           .catch(e => { out.textContent = 'Could not send: ' + e.message + '. Use Download log and the site\'s manual upload instead.'; })
           .finally(() => { send.disabled = false; });
       };

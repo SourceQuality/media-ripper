@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
 	mux.HandleFunc("GET /api/jobs/{id}/disc-folder.zip", s.discFolderZip)
 	mux.HandleFunc("GET /api/jobs/{id}/makemkv-log", s.makemkvLog)
+	mux.HandleFunc("POST /api/jobs/{id}/makemkv-log/send", s.makemkvLogSend)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/setup", s.authSetup)
@@ -466,6 +467,30 @@ func (s *Server) makemkvLog(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(name, `"`, "_")+`.txt"`)
 	}
 	_, _ = w.Write(b)
+}
+
+// makemkvLogSend posts the kept log to the TheDiscDB address pasted in
+// {"url": "..."} and reports TheDiscDB's answer.
+func (s *Server) makemkvLogSend(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 2*time.Minute)
+	defer cancel()
+	code, body, err := s.Manager.SendScanLog(ctx, r.PathValue("id"), in.URL)
+	if err != nil {
+		status := http.StatusBadGateway // could not reach TheDiscDB
+		if errors.Is(err, pipeline.ErrLogURL) || errors.Is(err, pipeline.ErrNoScanLog) {
+			status = http.StatusBadRequest
+		}
+		writeErr(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": code, "ok": code >= 200 && code < 300, "answer": body})
 }
 
 // discFolderZip streams the folder as a zip.

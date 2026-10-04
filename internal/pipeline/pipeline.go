@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,6 +49,8 @@ type Deps struct {
 	// DiscFiles lists a disc's files and sizes from its UDF filesystem
 	// (tests replace the reader).
 	DiscFiles func(device string) ([]udf.File, error)
+	// HTTPClient sends to TheDiscDB (tests point it at a fake).
+	HTTPClient *http.Client
 	// ReadDisc lists a disc's files and reads the contents of those want
 	// accepts, up to limit bytes (tests replace the reader).
 	ReadDisc func(device string, want func(udf.File) bool, limit int64) ([]udf.File, map[string][]byte, error)
