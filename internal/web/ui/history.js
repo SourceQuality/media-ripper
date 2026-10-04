@@ -118,7 +118,7 @@
       <div class="card"><h2>Every title on the disc</h2>
         <div class="table-wrap"><table class="titles"><thead><tr><th>Source</th><th>Length</th><th>Size</th><th>Tracks</th><th>What it is</th><th>File</th></tr></thead><tbody>${titles || '<tr><td colspan="6" class="empty">No scan recorded</td></tr>'}</tbody></table></div>
       </div>
-      ${terminal(j.stage) ? folderCard(id, folder) : ''}
+      ${terminal(j.stage) || j.ejected ? folderCard(id, folder) : ''}
       ${filesCard()}
       ${(j.log || []).length ? `<div class="card"><h2>Log</h2><pre class="log">${esc(j.log.map(l => `${new Date(l.time).toLocaleTimeString()}  ${l.message}`).join('\n'))}</pre></div>` : ''}`;
       const det = $('#files');
