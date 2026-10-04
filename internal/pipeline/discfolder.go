@@ -134,7 +134,8 @@ func (m *Manager) readFolder(ctx context.Context, id, device string) (int, error
 	return len(r.data), nil
 }
 
-// keepFolder reads a ripped disc's small files before it is ejected.
+// keepFolder reads, before a ripped disc is ejected, what contributing it
+// to TheDiscDB takes: its small files and the MakeMKV scan log.
 func (m *Manager) keepFolder(ctx context.Context, job *Job, device string) {
 	if !wantFolder(job.Snapshot(), job.rt.cfg.Metadata.TheDiscDB.DiscFolder) {
 		return
@@ -144,14 +145,49 @@ func (m *Manager) keepFolder(ctx context.Context, job *Job, device string) {
 	n, err := m.readFolder(ctx, job.ID, device)
 	if err != nil {
 		job.logf("TheDiscDB folder not kept: %v", err)
+	} else {
+		job.logf("kept the disc's folder for TheDiscDB (%d small files, %s)", n, time.Since(start).Round(time.Second))
+	}
+	job.set(func(j *Job) { j.Message = "keeping the MakeMKV log for TheDiscDB" })
+	start = time.Now()
+	if err := m.keepScanLog(ctx, job.ID, device); err != nil {
+		job.logf("MakeMKV log for TheDiscDB not kept: %v", err)
 		return
 	}
-	job.logf("kept the disc's folder for TheDiscDB (%d small files, %s)", n, time.Since(start).Round(time.Second))
+	job.logf("kept the MakeMKV log for TheDiscDB (%s)", time.Since(start).Round(time.Second))
+}
+
+// logFile is a job's MakeMKV scan log for TheDiscDB.
+func (m *Manager) logFile(id string) string {
+	return filepath.Join(m.Config().StateDir(), "makemkv-logs", filepath.Base(id)+".txt")
+}
+
+// keepScanLog runs the scan TheDiscDB asks for and keeps its output.
+func (m *Manager) keepScanLog(ctx context.Context, id, device string) error {
+	out, err := m.rt.Load().mk.ScanLog(ctx, device)
+	if err != nil {
+		return err
+	}
+	p := m.logFile(id)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	return atomicWriteFile(p, []byte(out))
+}
+
+// ScanLog returns a job's kept MakeMKV log.
+func (m *Manager) ScanLog(id string) ([]byte, error) {
+	b, err := os.ReadFile(m.logFile(id))
+	if err != nil {
+		return nil, errors.New("no MakeMKV log was kept for this disc; read it from the disc first")
+	}
+	return b, nil
 }
 
 // DiscFolder describes what can be offered for TheDiscDB's "Add a disc".
 type DiscFolder struct {
 	Kept    bool   `json:"kept"`              // the small files are kept
+	Log     bool   `json:"log"`               // the MakeMKV scan log is kept
 	Waiting bool   `json:"waiting,omitempty"` // read when the disc goes in
 	Files   int    `json:"files,omitempty"`
 	Bytes   int64  `json:"bytes,omitempty"` // the disc's full size
@@ -173,6 +209,9 @@ func (m *Manager) DiscFolderStatus(id string) (DiscFolder, error) {
 				st.Bytes += f.Size
 			}
 		}
+	}
+	if _, err := os.Stat(m.logFile(id)); err == nil {
+		st.Log = true
 	}
 	if p := m.nasFolder(j); p != "" {
 		if _, err := os.Stat(p); err == nil {
@@ -222,6 +261,12 @@ func (m *Manager) takeFolderRequest(fp string) (string, bool) {
 func (r *runner) readRequestedFolder(ctx context.Context, d drive.Drive, id string) {
 	r.log.Info("reading the disc's folder for TheDiscDB", "job", id)
 	n, err := r.m.readFolder(ctx, id, r.path)
+	if err == nil {
+		r.log.Info("kept the disc's folder for TheDiscDB", "job", id, "files", n)
+		if err = r.m.keepScanLog(ctx, id, r.path); err == nil {
+			r.log.Info("kept the MakeMKV log for TheDiscDB", "job", id)
+		}
+	}
 	if err != nil {
 		r.log.Warn("TheDiscDB folder", "job", id, "err", err)
 		r.mu.Lock()
@@ -229,7 +274,6 @@ func (r *runner) readRequestedFolder(ctx context.Context, d drive.Drive, id stri
 		r.mu.Unlock()
 		return
 	}
-	r.log.Info("kept the disc's folder for TheDiscDB", "job", id, "files", n)
 	if r.m.Config().Eject.OnSuccess {
 		_ = d.Eject()
 	}

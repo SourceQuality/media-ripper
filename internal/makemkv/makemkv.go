@@ -163,6 +163,25 @@ func (c *Client) Info(ctx context.Context, device string) (*Disc, error) {
 	return disc, nil
 }
 
+// ScanLog runs the scan TheDiscDB asks contributors for (makemkvcon
+// --minlength=0 --robot info) and returns its output as it was printed:
+// every title, short ones included, unlike the scan used for ripping.
+func (c *Client) ScanLog(ctx context.Context, device string) (string, error) {
+	if c.ScanTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.ScanTimeout)
+		defer cancel()
+	}
+	lines, err := c.run(ctx, []string{"--minlength=0", "--robot", "info", "dev:" + device}, nil)
+	if err != nil {
+		return "", fmt.Errorf("makemkvcon info: %w", err)
+	}
+	if len(lines) == 0 {
+		return "", errors.New("makemkvcon printed nothing")
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
 // Rip saves one title from device into outDir and returns the written file.
 func (c *Client) Rip(ctx context.Context, device string, title *Title, outDir string, onProgress func(Progress)) (string, error) {
 	if c.RipTimeout > 0 {
