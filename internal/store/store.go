@@ -27,6 +27,7 @@ type Store struct {
 	reviews map[string]json.RawMessage
 	matches map[string]DiscMatch
 	sets    map[string]BoxSet
+	pending map[string]time.Time // jobs whose import must run again
 }
 
 // BoxSet tracks which discs of one catalogued release have been ripped.
@@ -87,7 +88,7 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, series: map[string]SeriesProgress{}, discs: map[string]DiscRecord{}, reviews: map[string]json.RawMessage{}, matches: map[string]DiscMatch{}, sets: map[string]BoxSet{}}
+	s := &Store{dir: dir, series: map[string]SeriesProgress{}, discs: map[string]DiscRecord{}, reviews: map[string]json.RawMessage{}, matches: map[string]DiscMatch{}, sets: map[string]BoxSet{}, pending: map[string]time.Time{}}
 	if err := s.loadJSON("series.json", &s.series); err != nil {
 		return nil, err
 	}
@@ -101,6 +102,9 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadJSON("boxsets.json", &s.sets); err != nil {
+		return nil, err
+	}
+	if err := s.loadJSON("pending-imports.json", &s.pending); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -251,13 +255,57 @@ func (s *Store) History(limit int) ([]json.RawMessage, error) {
 		}
 		all = append(all, json.RawMessage(line))
 	}
-	if limit > 0 && len(all) > limit {
-		all = all[len(all)-limit:]
-	}
 	for i, j := 0, len(all)-1; i < j; i, j = i+1, j-1 {
 		all[i], all[j] = all[j], all[i]
 	}
-	return all, nil
+	// A job is recorded again when its import is retried; the newest
+	// record is the one that counts.
+	seen := map[string]bool{}
+	out := all[:0]
+	for _, raw := range all {
+		var rec struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &rec) == nil && rec.ID != "" {
+			if seen[rec.ID] {
+				continue
+			}
+			seen[rec.ID] = true
+		}
+		out = append(out, raw)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// SetImportPending marks (or clears) a job whose Radarr/Sonarr import has
+// to run again, because it was cut short by a restart.
+func (s *Store) SetImportPending(id string, pending bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if pending {
+		s.pending[id] = time.Now()
+	} else if _, ok := s.pending[id]; ok {
+		delete(s.pending, id)
+	} else {
+		return nil
+	}
+	return s.saveJSON("pending-imports.json", s.pending)
+}
+
+// PendingImports lists the jobs whose import has to run again, oldest
+// first.
+func (s *Store) PendingImports() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.pending))
+	for id := range s.pending {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 // SaveReview keeps a job that waits for a person to confirm its titles.

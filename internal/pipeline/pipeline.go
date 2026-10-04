@@ -199,10 +199,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		m.watchStorage(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		m.resumeImports(ctx)
 	}()
 	go func() {
 		defer wg.Done()
@@ -847,7 +851,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		if snap.Stage == StageReview {
 			ev.Type = "review"
 		}
-		ev.Outputs, ev.Elapsed, ev.Error = outs, snap.Elapsed, strings.Join(snap.Warnings, "; ")
+		ev.Outputs, ev.Elapsed, ev.Error, ev.ImportFailed = outs, snap.Elapsed, strings.Join(snap.Warnings, "; "), importFailed(snap)
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case StageFailed, StageCancelled:
 		if !cfg.Output.KeepWorkspaceOnError && !cfg.Output.Resume {
@@ -893,6 +897,8 @@ type historyEntry struct {
 	ID           string              `json:"id"`
 	Drive        string              `json:"drive"`
 	Label        string              `json:"label"`
+	Fingerprint  string              `json:"fingerprint,omitempty"`
+	DiscType     string              `json:"disc_type,omitempty"`
 	Title        string              `json:"title"`
 	Kind         string              `json:"kind"`
 	Stage        Stage               `json:"stage"`
@@ -914,7 +920,7 @@ type historyEntry struct {
 }
 
 func historyRecord(s Job) historyEntry {
-	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
+	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Fingerprint: s.Fingerprint, DiscType: s.DiscType, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
 		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles,
 		Catalog: s.Catalog, Matched: s.CatalogMatched, Compared: s.CatalogCompared, Hash: s.ContentHash, HashOK: s.HashMatched,
 		Verification: s.Verification, Warnings: s.Warnings}
@@ -1264,7 +1270,7 @@ func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 	if !cfg.Output.Overwrite {
 		dest = uniquePath(dest)
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), os.FileMode(cfg.Output.DirMode)); err != nil {
+	if err := mkdirAll(filepath.Dir(dest), os.FileMode(cfg.Output.DirMode)); err != nil {
 		return Output{}, fmt.Errorf("create %s: %w", filepath.Dir(dest), err)
 	}
 	var rate meter
@@ -1362,8 +1368,32 @@ func moveFile(ctx context.Context, src, dst string, mode os.FileMode, progress f
 		_ = os.Remove(tmp)
 		return 0, err
 	}
+	_ = os.Chmod(dst, mode) // the umask applied when it was created
 	_ = os.Remove(src)
 	return n, nil
+}
+
+// mkdirAll creates dir and its missing parents with exactly mode: the
+// service's umask (usually 022) would otherwise take away the group write
+// that output.dir_mode asks for.
+func mkdirAll(dir string, mode os.FileMode) error {
+	var missing []string
+	for d := filepath.Clean(dir); ; d = filepath.Dir(d) {
+		if _, err := os.Stat(d); err == nil {
+			break
+		}
+		missing = append(missing, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	if err := os.MkdirAll(dir, mode); err != nil {
+		return err
+	}
+	for _, d := range missing {
+		_ = os.Chmod(d, mode)
+	}
+	return nil
 }
 
 // copyCtx copies until EOF or cancellation, reporting the running total

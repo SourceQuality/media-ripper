@@ -57,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config", s.putConfig)
 	mux.HandleFunc("GET /api/jobs/{id}", s.job)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancel)
+	mux.HandleFunc("POST /api/jobs/{id}/retry-import", s.retryImport)
 	mux.HandleFunc("POST /api/drives/{drive}/eject", s.eject)
 	mux.HandleFunc("POST /api/drives/{drive}/rescan", s.rescan)
 	mux.HandleFunc("POST /api/series/reset", s.resetSeries)
@@ -344,6 +345,19 @@ func (s *Server) approveReview(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Minute)
 	defer cancel()
 	j, err := s.Manager.ApproveReview(ctx, r.PathValue("id"), edit)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+// retryImport runs a finished disc's Radarr/Sonarr import again. It keeps
+// going if the browser leaves; a restart picks it up again.
+func (s *Server) retryImport(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 60*time.Minute)
+	defer cancel()
+	j, err := s.Manager.RetryImport(ctx, r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return

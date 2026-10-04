@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,8 +20,9 @@ import (
 	"github.com/sourcequality/media-ripper/internal/selector"
 )
 
-// fakeRadarr "imports" by moving whatever is under the scanned path into
-// its own root folder, like the real thing does with importMode Move.
+// fakeRadarr "imports" by copying the files it is given into its own root
+// folder (media-ripper always asks for a copy) and lists them as its
+// movie files.
 func fakeRadarr(t *testing.T, root string, pathPrefix string) (*httptest.Server, *[]string) {
 	var mu sync.Mutex
 	var calls []string
@@ -61,17 +63,20 @@ func fakeRadarr(t *testing.T, root string, pathPrefix string) (*httptest.Server,
 			_ = json.NewEncoder(w).Encode(items)
 		case r.URL.Path == "/api/v3/qualitydefinition":
 			_, _ = w.Write([]byte(`[{"quality":{"id":30,"name":"Remux-1080p"}}]`))
+		case r.URL.Path == "/api/v3/moviefile":
+			_ = json.NewEncoder(w).Encode(heldFiles(filepath.Join(root, "The Matrix (1999)")))
 		case r.URL.Path == "/api/v3/command" && r.Method == http.MethodPost:
 			var body struct {
-				Name  string `json:"name"`
-				Files []struct {
+				Name       string `json:"name"`
+				ImportMode string `json:"importMode"`
+				Files      []struct {
 					Path    string         `json:"path"`
 					Quality map[string]any `json:"quality"`
 				} `json:"files"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body.Name != "ManualImport" {
-				t.Errorf("command %q, want ManualImport", body.Name)
+			if body.Name != "ManualImport" || body.ImportMode != "copy" {
+				t.Errorf("command %q mode %q, want a ManualImport copy", body.Name, body.ImportMode)
 			}
 			_ = os.MkdirAll(filepath.Join(root, "The Matrix (1999)"), 0o755)
 			for _, f := range body.Files {
@@ -79,7 +84,7 @@ func fakeRadarr(t *testing.T, root string, pathPrefix string) (*httptest.Server,
 					t.Errorf("quality sent = %v, want Remux-1080p", f.Quality)
 				}
 				local := strings.Replace(f.Path, pathPrefix, filepath.Dir(root), 1)
-				_ = os.Rename(local, filepath.Join(root, "The Matrix (1999)", filepath.Base(local)))
+				copyFile(t, local, filepath.Join(root, "The Matrix (1999)", filepath.Base(local)))
 			}
 			_, _ = w.Write([]byte(`{"id":9,"status":"completed"}`))
 		default:
@@ -87,6 +92,30 @@ func fakeRadarr(t *testing.T, root string, pathPrefix string) (*httptest.Server,
 		}
 	}))
 	return srv, &calls
+}
+
+// heldFiles is an app's file list: the files in dir with their sizes.
+func heldFiles(dir string) []map[string]any {
+	out := []map[string]any{}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if info, err := e.Info(); err == nil && !e.IsDir() {
+			out = append(out, map[string]any{"path": filepath.Join(dir, e.Name()), "size": info.Size()})
+		}
+	}
+	return out
+}
+
+func copyFile(t *testing.T, src, dst string) {
+	t.Helper()
+	data, err := os.ReadFile(src)
+	if err != nil {
+		t.Errorf("read %s: %v", src, err)
+		return
+	}
+	if err := os.WriteFile(dst, data, 0o644); err != nil {
+		t.Errorf("write %s: %v", dst, err)
+	}
 }
 
 func TestRadarrHandoffEndToEnd(t *testing.T) {
@@ -203,11 +232,12 @@ func TestCommonDirAndCleanup(t *testing.T) {
 // fakeSonarr behaves like the Sonarr 4 seen on real hardware: a new
 // series' episodes load in the background, the preview rejects files until
 // they have, the folder scan "completes" without importing, and
-// ManualImport moves exactly the files it is given. sonarrOpts tweak it.
+// ManualImport copies exactly the files it is given. sonarrOpts tweak it.
 type sonarrOpts struct {
-	takeNothing bool          // ManualImport succeeds but moves nothing
+	takeNothing *atomic.Bool  // ManualImport reports success but keeps nothing (as when it could not delete from staging)
 	reject      string        // file name the preview rejects as a sample
-	moveAfter   time.Duration // the move shows up only this long after "completed"
+	moveAfter   time.Duration // the files show up only this long after "completed"
+	commands    *atomic.Int32 // counts ManualImport commands
 }
 
 func fakeSonarr(t *testing.T, root string, o sonarrOpts) *httptest.Server {
@@ -241,6 +271,11 @@ func fakeSonarr(t *testing.T, root string, o sonarrOpts) *httptest.Server {
 				return
 			}
 			_, _ = w.Write([]byte(`[{"id":101,"seasonNumber":1,"episodeNumber":1,"title":"Pilot"},{"id":102,"seasonNumber":1,"episodeNumber":2,"title":"Two"}]`))
+		case r.URL.Path == "/api/v3/episodefile":
+			if r.URL.Query().Get("seriesId") != "7" {
+				t.Errorf("episodefile query = %v", r.URL.Query())
+			}
+			_ = json.NewEncoder(w).Encode(heldFiles(filepath.Join(root, "Friends (1994)")))
 		case r.URL.Path == "/api/v3/manualimport":
 			var items []map[string]any
 			_ = filepath.Walk(r.URL.Query().Get("folder"), func(f string, info os.FileInfo, err error) error {
@@ -275,18 +310,26 @@ func fakeSonarr(t *testing.T, root string, o sonarrOpts) *httptest.Server {
 				_, _ = w.Write([]byte(`{"id":3,"status":"completed","result":"unsuccessful","message":"Failed to import"}`))
 				return
 			}
+			if o.commands != nil {
+				o.commands.Add(1)
+			}
 			dst := filepath.Join(root, "Friends (1994)")
 			_ = os.MkdirAll(dst, 0o755)
 			for _, f := range body.Files {
 				if q, _ := f.Quality["quality"].(map[string]any); q["name"] != "DVD" { // tvInfo is a DVD
 					t.Errorf("quality sent = %v", f.Quality)
 				}
-				if !o.takeNothing {
+				if o.takeNothing == nil || !o.takeNothing.Load() {
 					src, to := f.Path, filepath.Join(dst, filepath.Base(f.Path))
+					data, err := os.ReadFile(src)
+					if err != nil {
+						t.Errorf("read staged file: %v", err)
+						continue
+					}
 					if o.moveAfter > 0 {
-						time.AfterFunc(o.moveAfter, func() { _ = os.Rename(src, to) })
+						time.AfterFunc(o.moveAfter, func() { _ = os.WriteFile(to, data, 0o644) })
 					} else {
-						_ = os.Rename(src, to)
+						_ = os.WriteFile(to, data, 0o644)
 					}
 				}
 			}
@@ -330,7 +373,9 @@ func TestSonarrImportWaitsForNewSeries(t *testing.T) {
 
 // A scan that takes nothing is a warning naming the files left behind.
 func TestSonarrImportNothingTakenIsWarned(t *testing.T) {
-	e, _ := sonarrEnv(t, sonarrOpts{takeNothing: true})
+	var none atomic.Bool
+	none.Store(true)
+	e, _ := sonarrEnv(t, sonarrOpts{takeNothing: &none})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go e.m.Run(ctx)
@@ -525,5 +570,132 @@ func TestDiscordActions(t *testing.T) {
 	}
 	if got := e.m.DiscordAction(ctx, "nonsense"); got != "Unknown button" {
 		t.Fatalf("unknown: %q", got)
+	}
+}
+
+// Seen on The Twilight Zone S1 D3: Sonarr could not delete the staged
+// files, rolled the import back and still reported success. The disc is
+// recorded with its files not imported, and a retry gets them in.
+func TestSonarrImportRetry(t *testing.T) {
+	var none atomic.Bool
+	none.Store(true)
+	e, root := sonarrEnv(t, sonarrOpts{takeNothing: &none})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	j := e.waitDone(t)
+	if !importFailed(j) {
+		t.Fatalf("import should have failed: %+v", j.Outputs)
+	}
+	if _, err := e.m.RetryImport(ctx, "no-such-job"); err == nil {
+		t.Fatal("retry of an unknown job should fail")
+	}
+
+	none.Store(false)
+	r, err := e.m.RetryImport(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if importFailed(r) || r.Stage != StageDone || len(r.Warnings) != 0 {
+		t.Fatalf("after retry: stage=%s warnings=%v outputs=%+v", r.Stage, r.Warnings, r.Outputs)
+	}
+	if got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(got) != 2 {
+		t.Fatalf("sonarr holds %d files, want 2", len(got))
+	}
+	for _, o := range r.Outputs {
+		if _, err := os.Stat(o.Path); !os.IsNotExist(err) {
+			t.Fatalf("%s should have left staging", o.Path)
+		}
+	}
+	// The saved history now shows the import, and a second retry has
+	// nothing left to do.
+	if rec, ok := e.m.Record(j.ID); !ok || importFailed(rec) {
+		t.Fatalf("record after retry: %+v", rec.Outputs)
+	}
+	if _, err := e.m.RetryImport(ctx, j.ID); err == nil {
+		t.Fatal("second retry should have nothing to import")
+	}
+}
+
+// An import cut short by shutdown is not a failure: it is marked pending
+// and runs again when media-ripper starts.
+func TestInterruptedImportResumesAtStart(t *testing.T) {
+	old := heldWait
+	heldWait = 30 * time.Second
+	t.Cleanup(func() { heldWait = old })
+	var none atomic.Bool
+	none.Store(true)
+	var commands atomic.Int32
+	e, root := sonarrEnv(t, sonarrOpts{takeNothing: &none, commands: &commands})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = e.m.Run(ctx); close(done) }()
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+
+	// Stop while the import waits for Sonarr to list the files.
+	deadline := time.Now().Add(10 * time.Second)
+	for commands.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if commands.Load() == 0 {
+		t.Fatal("import never started")
+	}
+	cancel()
+	<-done
+	j := e.waitDone(t)
+	if got := e.st.PendingImports(); len(got) != 1 || got[0] != j.ID {
+		t.Fatalf("pending = %v, want %s", got, j.ID)
+	}
+	if !importFailed(j) || j.Outputs[0].Import != "not imported: interrupted" {
+		t.Fatalf("outputs = %+v", j.Outputs)
+	}
+
+	// The next start imports them.
+	none.Store(false)
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	e.m.resumeImports(ctx2)
+	if got := e.st.PendingImports(); len(got) != 0 {
+		t.Fatalf("still pending: %v", got)
+	}
+	if rec, ok := e.m.Record(j.ID); !ok || importFailed(rec) {
+		t.Fatalf("after resume: %+v", rec.Outputs)
+	}
+	if got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(got) != 2 {
+		t.Fatalf("sonarr holds %d files, want 2", len(got))
+	}
+}
+
+// Files someone already imported by hand (as on S1 D3) are recognised:
+// the retry sends no new import and only tidies staging.
+func TestRetryWhenAppAlreadyHoldsTheFiles(t *testing.T) {
+	var none atomic.Bool
+	none.Store(true)
+	var commands atomic.Int32
+	e, root := sonarrEnv(t, sonarrOpts{takeNothing: &none, commands: &commands})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	j := e.waitDone(t)
+	if !importFailed(j) {
+		t.Fatalf("import should have failed: %+v", j.Outputs)
+	}
+	sent := commands.Load()
+	for _, o := range j.Outputs {
+		copyFile(t, o.Path, filepath.Join(root, "Friends (1994)", filepath.Base(o.Path)))
+	}
+	r, err := e.m.RetryImport(ctx, j.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if importFailed(r) || len(r.Warnings) != 0 || commands.Load() != sent {
+		t.Fatalf("outputs=%+v warnings=%v commands %d -> %d", r.Outputs, r.Warnings, sent, commands.Load())
+	}
+	for _, o := range r.Outputs {
+		if _, err := os.Stat(o.Path); !os.IsNotExist(err) {
+			t.Fatalf("%s should have left staging", o.Path)
+		}
 	}
 }

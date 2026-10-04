@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -90,5 +91,39 @@ func TestReviewsAndMatchesPersist(t *testing.T) {
 	_ = s2.DeleteReview("20261003-220000-001")
 	if _, ok := s2.Review("20261003-220000-001"); ok || len(s2.Reviews()) != 1 {
 		t.Fatal("review not deleted")
+	}
+}
+
+func TestHistoryNewestRecordWins(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range []map[string]string{{"id": "a", "v": "old"}, {"id": "b"}, {"id": "a", "v": "new"}} {
+		if err := s.AppendHistory(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h, _ := s.History(0)
+	if len(h) != 2 || !strings.Contains(string(h[0]), `"new"`) || !strings.Contains(string(h[1]), `"b"`) {
+		t.Fatalf("history = %s", h)
+	}
+	if h, _ := s.History(1); len(h) != 1 || !strings.Contains(string(h[0]), `"new"`) {
+		t.Fatalf("limited history = %s", h)
+	}
+}
+
+func TestPendingImportsPersist(t *testing.T) {
+	dir := t.TempDir()
+	s, _ := Open(dir)
+	_ = s.SetImportPending("job-2", true)
+	_ = s.SetImportPending("job-1", true)
+	_ = s.SetImportPending("job-2", false)
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.PendingImports(); len(got) != 1 || got[0] != "job-1" {
+		t.Fatalf("pending = %v", got)
 	}
 }

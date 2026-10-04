@@ -160,6 +160,9 @@ arr:
     quality_profile: ""     # name or id; empty = first profile
     add_missing: true
     monitored: false
+    # move: Radarr copies the file into the library, then media-ripper
+    # removes it from staging once Radarr lists it. Radarr never needs
+    # write access to staging. copy: the staged file stays.
     import_mode: move       # move | copy
     # When Radarr runs elsewhere, map the staging path to its view of it.
     path_map: {}

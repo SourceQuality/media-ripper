@@ -67,7 +67,7 @@
       { key: 'arr.radarr.quality_profile', label: 'Quality profile', type: 'text', hint: 'empty = first' },
       { key: 'arr.radarr.add_missing', label: 'Add missing movies', type: 'bool' },
       { key: 'arr.radarr.monitored', label: 'Add as monitored', type: 'bool' },
-      { key: 'arr.radarr.import_mode', label: 'Import mode', type: 'select', options: ['move', 'copy'] },
+      { key: 'arr.radarr.import_mode', label: 'Import mode', type: 'select', options: ['move', 'copy'], hint: 'move: staging is emptied once Radarr has the file; copy: the staged file stays' },
       { key: 'arr.radarr.path_map', label: 'Path map', type: 'map', hint: 'local path = path as Radarr sees it', wide: true },
     ]},
     { title: 'Sonarr', fields: [
@@ -78,7 +78,7 @@
       { key: 'arr.sonarr.quality_profile', label: 'Quality profile', type: 'text', hint: 'empty = first' },
       { key: 'arr.sonarr.add_missing', label: 'Add missing series', type: 'bool' },
       { key: 'arr.sonarr.monitored', label: 'Add as monitored', type: 'bool' },
-      { key: 'arr.sonarr.import_mode', label: 'Import mode', type: 'select', options: ['move', 'copy'] },
+      { key: 'arr.sonarr.import_mode', label: 'Import mode', type: 'select', options: ['move', 'copy'], hint: 'move: staging is emptied once Sonarr has the file; copy: the staged file stays' },
       { key: 'arr.sonarr.path_map', label: 'Path map', type: 'map', hint: 'local path = path as Sonarr sees it', wide: true },
     ]},
     { title: 'Handoff', fields: [
