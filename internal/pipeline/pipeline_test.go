@@ -84,6 +84,11 @@ fi
 # mkv: last two args are title id and outdir
 title=$(eval echo \${$(($#-1))})
 outdir=$(eval echo \${$#})
+[ -n "$FAKE_LOG" ] && echo "$title" >> "$FAKE_LOG"
+if [ "$title" = "$FAKE_FAIL_TITLE" ]; then
+  echo 'MSG:5003,0,0,"Read error","Read error"'
+  exit 1
+fi
 mkdir -p "$outdir"
 echo 'PRGC:5017,0,"Saving to MKV file"'
 echo 'PRGV:0,0,65536'
@@ -548,4 +553,139 @@ func TestBackgroundDeliveryFailure(t *testing.T) {
 	if _, ok := e.st.Disc("fp-friends-1"); ok {
 		t.Fatal("failed disc recorded as ripped")
 	}
+}
+
+// A disc that fails part-way is resumed on reinsert: titles already
+// delivered are neither ripped nor delivered again, so no "(2)" copies.
+func TestResumeAfterFailedRip(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test",
+		Episodes: []metadata.Episode{{Number: 1, Title: "Pilot"}, {Number: 2, Title: "The One with the Sonogram"}}}
+	e := setup(t, tvInfo, fakeProvider{id})
+	ripLog := filepath.Join(t.TempDir(), "rips.log")
+	t.Setenv("FAKE_LOG", ripLog)
+	t.Setenv("FAKE_FAIL_TITLE", "2")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	if j := e.waitDone(t); j.Stage != StageFailed {
+		t.Fatalf("first attempt: stage = %s", j.Stage)
+	}
+	ep1 := filepath.Join(e.out, "TV Shows", "Friends (1994)", "Season 01", "Friends - S01E01 - Pilot.mkv")
+	if _, err := os.Stat(ep1); err != nil {
+		t.Fatalf("episode 1 should be delivered before the failure: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.RipDir(), "fp-friends-1", resumeFile)); err != nil {
+		t.Fatalf("workspace not kept for resume: %v", err)
+	}
+
+	// The read error clears (a cleaned disc, a better drive); reinsert.
+	t.Setenv("FAKE_FAIL_TITLE", "")
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	deadline := time.Now().Add(10 * time.Second)
+	var j Job
+	for time.Now().Before(deadline) {
+		snap := e.m.Snapshot()
+		if len(snap.Recent) == 2 && snap.Recent[0].Stage.Terminal() {
+			j = snap.Recent[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if j.Stage != StageDone || len(j.Outputs) != 2 {
+		t.Fatalf("resumed job: stage=%s outputs=%+v err=%s", j.Stage, j.Outputs, j.Error)
+	}
+	for _, o := range j.Outputs {
+		if strings.Contains(o.Path, "(2)") {
+			t.Fatalf("duplicate delivery: %s", o.Path)
+		}
+	}
+	data, _ := os.ReadFile(ripLog)
+	if got := strings.Fields(string(data)); strings.Join(got, ",") != "1,2,2" {
+		t.Fatalf("rips = %v, want title 1 once and title 2 twice", got)
+	}
+	if next := e.st.NextEpisode("tmdb:1668", 1); next != 3 {
+		t.Fatalf("next episode = %d", next)
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.RipDir(), "fp-friends-1")); !os.IsNotExist(err) {
+		t.Fatalf("workspace not removed after success: %v", err)
+	}
+}
+
+// With resume off, a failed disc starts over.
+func TestResumeDisabled(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	e.cfg.Output.Resume = false
+	ripLog := filepath.Join(t.TempDir(), "rips.log")
+	t.Setenv("FAKE_LOG", ripLog)
+	t.Setenv("FAKE_FAIL_TITLE", "2")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	if j := e.waitDone(t); j.Stage != StageFailed {
+		t.Fatalf("stage = %s", j.Stage)
+	}
+	if _, err := os.Stat(filepath.Join(e.cfg.RipDir(), "fp-friends-1")); !os.IsNotExist(err) {
+		t.Fatalf("workspace kept with resume off: %v", err)
+	}
+}
+
+func TestStaleWorkspace(t *testing.T) {
+	now := time.Now()
+	write := func(updated time.Time) string {
+		dir := t.TempDir()
+		data, _ := json.Marshal(resumeState{Fingerprint: "fp", Updated: updated, Titles: map[int]*resumedTitle{1: {Ripped: "x"}}})
+		if err := os.WriteFile(filepath.Join(dir, resumeFile), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	fresh, old := write(now.Add(-time.Hour)), write(now.Add(-100*time.Hour))
+	cases := []struct {
+		name   string
+		dir    string
+		resume bool
+		stale  bool
+	}{
+		{"recent record kept", fresh, true, false},
+		{"old record removed", old, true, true},
+		{"no record removed", t.TempDir(), true, true},
+		{"resume off removes all", fresh, false, true},
+	}
+	for _, c := range cases {
+		if got := staleWorkspace(c.dir, c.resume, 72*time.Hour, now); got != c.stale {
+			t.Errorf("%s: stale = %v, want %v", c.name, got, c.stale)
+		}
+	}
+}
+
+// While a job runs the loop does not poll, so the drive status must be read
+// live; after an eject part-way through the job it reads tray-open.
+func TestDriveStatusLiveDuringJob(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	e.cfg.PostProcess.Mode = "custom"
+	e.cfg.PostProcess.CustomCommand = []string{"sh", "-c", "sleep 1; cp \"$1\" \"$2\"", "sh", "{input}", "{output}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, d := range e.m.Snapshot().Drives {
+			if d.Job != nil && d.Job.Ejected && !d.Job.Stage.Terminal() {
+				if d.Status != drive.TrayOpen.String() {
+					t.Fatalf("drive status = %s after eject, want tray-open", d.Status)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("never saw the job between eject and finish")
 }

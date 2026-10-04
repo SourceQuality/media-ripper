@@ -226,11 +226,17 @@ func (m *Manager) cleanWorkspace() {
 	if err != nil {
 		return
 	}
+	cfg := m.Config()
+	now := time.Now()
 	for _, e := range entries {
 		if !e.IsDir() || strings.HasSuffix(e.Name(), ".keep") {
 			continue
 		}
 		p := filepath.Join(ripDir, e.Name())
+		if !staleWorkspace(p, cfg.Output.Resume, cfg.Output.ResumeMaxAge.D(), now) {
+			m.log.Info("keeping workspace for resume", "path", p)
+			continue
+		}
 		m.log.Info("removing stale workspace", "path", p)
 		_ = os.RemoveAll(p)
 	}
@@ -366,6 +372,9 @@ type runner struct {
 	lastState drive.Status
 	lastLabel string
 	ignored   bool
+	// drv is read live while a job runs: the loop does not poll then, and
+	// the job ejects part-way through.
+	drv drive.Drive
 }
 
 func (r *runner) current() *Job {
@@ -385,6 +394,11 @@ func (r *runner) status() DriveStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := DriveStatus{Path: r.path, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored}
+	if r.job != nil && r.drv != nil {
+		if st, err := r.drv.Status(); err == nil {
+			s.Status = st.String()
+		}
+	}
 	if r.job != nil {
 		j := r.job.Snapshot()
 		s.Job = &j
@@ -401,6 +415,9 @@ func (r *runner) loop(ctx context.Context) {
 		r.mu.Unlock()
 		return
 	}
+	r.mu.Lock()
+	r.drv = d
+	r.mu.Unlock()
 	if r.m.Config().Eject.CloseTrayOnStart {
 		_ = d.CloseTray()
 	}
@@ -537,10 +554,17 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		return
 	}
 
-	workDir := filepath.Join(cfg.RipDir(), job.ID)
+	workDir := workDir(cfg, job)
+	if !cfg.Output.Resume {
+		_ = os.RemoveAll(workDir)
+	}
 	if err := os.MkdirAll(workDir, 0o775); err != nil {
 		m.fail(job, err)
 		return
+	}
+	rs := openResume(workDir, job, cfg.Output.Resume)
+	if rs.resumable() {
+		job.logf("resuming: reusing titles ripped or delivered by an earlier attempt")
 	}
 	title := displayTitle(job)
 	job.rt.notifier.Send(ctx, notify.Event{Type: "started", Drive: job.Drive, Label: job.Label, Title: title})
@@ -553,12 +577,21 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	// strict order.
 	job.set(func(j *Job) { j.Total = len(sel.Picks) })
 	files := make([]string, len(sel.Picks))
+	// done marks picks an earlier attempt already delivered.
+	done := make([]bool, len(sel.Picks))
 	finishPick := func(i int) error {
 		file, err := m.postProcess(ctx, job, sel.Picks[i], files[i])
 		if err != nil {
 			return err
 		}
-		return m.deliver(ctx, job, disc, sel.Picks[i], file)
+		out, err := m.deliver(ctx, job, disc, sel.Picks[i], file)
+		if err != nil {
+			return err
+		}
+		if err := rs.markDelivered(sel.Picks[i].Title.ID, out); err != nil {
+			log.Warn("resume state", "err", err)
+		}
+		return nil
 	}
 
 	var (
@@ -609,12 +642,26 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			break
 		}
 		job.set(func(j *Job) { j.Current = i + 1 })
-		file, err := m.ripPick(ctx, job, disc, pick, workDir, i, len(sel.Picks))
-		if err != nil {
-			m.fail(job, err)
-			return
+		if out, ok := rs.delivered(pick.Title.ID); ok {
+			job.logf("%s already delivered to %s", pickName(pick), out.Path)
+			job.set(func(j *Job) { j.Outputs = append(j.Outputs, out) })
+			done[i] = true
+			continue
 		}
-		files[i] = file
+		if file, ok := rs.ripped(pick.Title.ID); ok {
+			job.logf("%s already ripped; reusing %s", pickName(pick), filepath.Base(file))
+			files[i] = file
+		} else {
+			file, err := m.ripPick(ctx, job, disc, pick, workDir, i, len(sel.Picks))
+			if err != nil {
+				m.fail(job, err)
+				return
+			}
+			files[i] = file
+			if err := rs.markRipped(pick.Title.ID, file); err != nil {
+				log.Warn("resume state", "err", err)
+			}
+		}
 		if work != nil {
 			work <- i
 		}
@@ -648,6 +695,9 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 				job.setStage(StageCancelled, "cancelled")
 				return
 			}
+			if done[i] {
+				continue
+			}
 			job.set(func(j *Job) { j.Current = i + 1 })
 			if err := finishPick(i); err != nil {
 				m.fail(job, err)
@@ -677,7 +727,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	cfg := job.rt.cfg
 	snap := job.Snapshot()
 	log := m.log.With("drive", job.Drive, "job", job.ID)
-	workDir := filepath.Join(cfg.RipDir(), job.ID)
+	workDir := workDir(cfg, job)
 
 	switch snap.Stage {
 	case StageDone:
@@ -697,7 +747,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
 		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "done", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Outputs: outs, Elapsed: snap.Elapsed, Error: strings.Join(snap.Warnings, "; ")})
 	case StageFailed, StageCancelled:
-		if !cfg.Output.KeepWorkspaceOnError {
+		if !cfg.Output.KeepWorkspaceOnError && !cfg.Output.Resume {
 			_ = os.RemoveAll(workDir)
 		}
 		log.Error("job "+string(snap.Stage), "title", displayTitle(job), "err", snap.Error)
@@ -918,6 +968,8 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 
 	// Each title gets its own folder so MakeMKV's output name cannot collide.
 	dir := filepath.Join(workDir, fmt.Sprintf("t%02d", pick.Title.ID))
+	// An interrupted earlier attempt may have left a partial file here.
+	_ = os.RemoveAll(dir)
 	var lastErr error
 	for attempt := 0; attempt <= cfg.MakeMKV.Retries; attempt++ {
 		if attempt > 0 {
@@ -1037,7 +1089,7 @@ func mkvTitle(job *Job, pick selector.Pick) string {
 	return s.Identity.Title
 }
 
-func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, file string) error {
+func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, file string) (Output, error) {
 	cfg := job.rt.cfg
 	job.stepStage(StageDelivering, "copying "+pickName(pick)+" to library")
 	s := job.Snapshot()
@@ -1072,7 +1124,7 @@ func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 	}
 	rel, err := naming.Render(tmpl, vars)
 	if err != nil {
-		return err
+		return Output{}, err
 	}
 	if ext := filepath.Ext(file); ext != "" && !strings.EqualFold(filepath.Ext(rel), ext) {
 		rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + ext
@@ -1086,17 +1138,16 @@ func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 		dest = uniquePath(dest)
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), os.FileMode(cfg.Output.DirMode)); err != nil {
-		return fmt.Errorf("create %s: %w", filepath.Dir(dest), err)
+		return Output{}, fmt.Errorf("create %s: %w", filepath.Dir(dest), err)
 	}
 	size, err := moveFile(ctx, file, dest, os.FileMode(cfg.Output.FileMode))
 	if err != nil {
-		return fmt.Errorf("deliver %s: %w", dest, err)
+		return Output{}, fmt.Errorf("deliver %s: %w", dest, err)
 	}
 	job.logf("delivered %s (%.2f GB)", dest, float64(size)/1e9)
-	job.set(func(j *Job) {
-		j.Outputs = append(j.Outputs, Output{Path: dest, Size: size, TitleID: pick.Title.ID, Duration: pick.Title.Duration})
-	})
-	return nil
+	out := Output{Path: dest, Size: size, TitleID: pick.Title.ID, Duration: pick.Title.Duration}
+	job.set(func(j *Job) { j.Outputs = append(j.Outputs, out) })
+	return out, nil
 }
 
 func resolutionName(videoSize string) string {
