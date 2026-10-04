@@ -2,6 +2,7 @@ package udf
 
 import (
 	"encoding/binary"
+	"strings"
 	"unicode/utf16"
 )
 
@@ -247,7 +248,13 @@ func (b *builder) fid(chars byte, name []byte, icb uint32, implUse int) []byte {
 func (b *builder) writeNode(n *tnode, blk, parent uint32) {
 	buf := b.blockBuf(blk)
 	if n.kids == nil {
-		b.fileEntry(buf, blk, fileTypeRegular, uint64(n.size), adShort, nil)
+		// Pressed Blu-rays record their AV streams as real-time files
+		// (type 249), not plain files: seen on The Twilight Zone 2021 set.
+		ft := byte(fileTypeRegular)
+		if strings.HasSuffix(strings.ToLower(n.name), ".m2ts") {
+			ft = fileTypeRealTime
+		}
+		b.fileEntry(buf, blk, ft, uint64(n.size), adShort, nil)
 		return
 	}
 	data := b.fid(fidParent|2, nil, parent, 0)
