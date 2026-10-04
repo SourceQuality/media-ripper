@@ -92,6 +92,10 @@ type Job struct {
 	Catalog         string `json:"catalog,omitempty"`
 	CatalogMatched  int    `json:"catalog_matched,omitempty"`
 	CatalogCompared int    `json:"catalog_compared,omitempty"`
+	// ContentHash is TheDiscDB's hash of the disc's video file sizes;
+	// HashMatched says it equals the matched catalogue disc's.
+	ContentHash string `json:"content_hash,omitempty"`
+	HashMatched bool   `json:"hash_matched,omitempty"`
 	// Verification says how far the titles can be trusted, for people.
 	Verification string `json:"verification,omitempty"`
 	// Activities are the steps moving data right now. A rip and the
@@ -249,7 +253,7 @@ func (j *Job) Snapshot() Job {
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
 		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun,
 		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog,
-		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared,
+		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared, ContentHash: j.ContentHash, HashMatched: j.HashMatched,
 	}
 	c.Warnings = append([]string(nil), j.Warnings...)
 	c.Activities = append([]Activity(nil), j.Activities...)

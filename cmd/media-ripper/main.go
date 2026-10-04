@@ -23,6 +23,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
+	"github.com/sourcequality/media-ripper/internal/udf"
 	"github.com/sourcequality/media-ripper/internal/updates"
 	"github.com/sourcequality/media-ripper/internal/web"
 )
@@ -292,10 +293,24 @@ func runLabel(device string, asJSON bool) error {
 		return err
 	}
 	hint := metadata.ParseLabel(label)
+	// TheDiscDB's content hash, from the file sizes on the disc.
+	var hash, hashErr string
+	if files, err := udf.ListDevice(pickDevice(device)); err != nil {
+		hashErr = err.Error()
+	} else if h, err := udf.ContentHash(files); err != nil {
+		hashErr = err.Error()
+	} else {
+		hash = h
+	}
 	if asJSON {
-		return json.NewEncoder(os.Stdout).Encode(map[string]any{"fingerprint": fp, "label": label, "hint": hint})
+		return json.NewEncoder(os.Stdout).Encode(map[string]any{"fingerprint": fp, "label": label, "hint": hint, "content_hash": hash})
 	}
 	fmt.Printf("label: %s\nfingerprint: %s\nquery: %s\n", label, fp, hint.Query)
+	if hash != "" {
+		fmt.Printf("content hash: %s\n", hash)
+	} else {
+		fmt.Printf("content hash: unavailable (%s)\n", hashErr)
+	}
 	if hint.Year > 0 {
 		fmt.Printf("year: %d\n", hint.Year)
 	}

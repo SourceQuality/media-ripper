@@ -40,7 +40,7 @@ func needsReview(s Job, rt *runtime) bool {
 	if s.Identity.Source == sourceManual {
 		return false
 	}
-	if s.CatalogMatched > 0 && s.CatalogMatched == s.CatalogCompared {
+	if s.HashMatched || s.CatalogMatched > 0 && s.CatalogMatched == s.CatalogCompared {
 		return false
 	}
 	if policy == PolicyConfident && s.Identity.Kind == metadata.KindMovie && s.Identity.Runtime > 0 && s.Selection != nil && len(s.Selection.Picks) == 1 {

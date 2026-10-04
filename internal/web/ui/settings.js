@@ -45,6 +45,7 @@
     { title: 'TheDiscDB', fields: [
       { key: 'metadata.thediscdb.enabled', label: 'Use TheDiscDB disc maps', type: 'bool', hint: 'Episode numbers, names and extras for catalogued discs' },
       { key: 'metadata.thediscdb.repo', label: 'Catalogue repository', type: 'text', hint: 'GitHub owner/name' },
+      { key: 'metadata.thediscdb.api', label: 'Content hash lookup', type: 'text', wide: true, hint: 'Identifies discs with useless labels; needs thediscdb.com reachable' },
     ]},
     { title: 'Title card OCR', fields: [
       { key: 'metadata.ocr.enabled', label: 'Enabled', type: 'bool' },

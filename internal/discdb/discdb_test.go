@@ -176,3 +176,50 @@ func TestFolderMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestFindByHash(t *testing.T) {
+	var gotHash string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Query     string            `json:"query"`
+			Variables map[string]string `json:"variables"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		gotHash = req.Variables["hash"]
+		if !strings.Contains(req.Query, "contentHash: { eq: $hash }") {
+			t.Errorf("query = %s", req.Query)
+		}
+		if gotHash != "29715BD1FE3E2DFA8AA1D3E089257333" {
+			_, _ = w.Write([]byte(`{"data":{"mediaItems":{"nodes":[]}}}`))
+			return
+		}
+		// Shaped like TheDiscDB's schema: Long sizes, String season/episode/tmdb.
+		_, _ = w.Write([]byte(`{"data":{"mediaItems":{"nodes":[{"title":"The Twilight Zone","year":1959,"type":"Series","externalids":{"tmdb":"6357"},
+		 "releases":[{"slug":"the-complete-series-blu-ray-2021","discs":[
+		  {"index":2,"name":"Season 1 Disc 2","slug":"S01D02","contentHash":"OTHER","titles":[]},
+		  {"index":1,"name":"Season 1 Disc 1","slug":"S01D01","contentHash":"29715BD1FE3E2DFA8AA1D3E089257333","titles":[
+		   {"index":0,"sourceFile":"00010.mpls","size":4583301120,"item":{"title":"The Lonely","type":"Episode","season":"1","episode":"7"}},
+		   {"index":3,"sourceFile":"00011.mpls","size":1430212608,"item":{"title":"Where is Everybody with Pitch Intro","type":"Extra","season":"1","episode":"1"}},
+		   {"index":9,"sourceFile":"00000.mpls","size":4888393728,"item":{"title":"Where Is Everybody?","type":"Episode","season":"1","episode":"1"}}]}]}]}]}}}`))
+	}))
+	defer srv.Close()
+	c := New("", t.TempDir())
+	c.API = srv.URL
+	ctx := context.Background()
+	m, err := c.FindByHash(ctx, "29715BD1FE3E2DFA8AA1D3E089257333", twilightScan)
+	if err != nil || m == nil {
+		t.Fatalf("find: %v %+v", err, m)
+	}
+	if m.Kind != Series || m.Title != "The Twilight Zone" || m.Year != 1959 || m.TMDBID != 6357 || m.Disc.Name != "Season 1 Disc 1" || m.Release != "the-complete-series-blu-ray-2021" {
+		t.Fatalf("match = %+v", m)
+	}
+	if it := m.ByID[0].Item; it == nil || it.Episode != 7 || it.Title != "The Lonely" {
+		t.Fatalf("title 0 = %+v", m.ByID[0])
+	}
+	if it := m.ByID[1].Item; it == nil || it.Type != "Extra" {
+		t.Fatalf("title 1 = %+v", m.ByID[1])
+	}
+	if m, err := c.FindByHash(ctx, "UNKNOWN", twilightScan); err != nil || m != nil {
+		t.Fatalf("uncatalogued: %+v %v", m, err)
+	}
+}

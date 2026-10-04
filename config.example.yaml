@@ -93,6 +93,9 @@ metadata:
   thediscdb:
     enabled: true
     repo: TheDiscDb/data
+    # Identifies discs with useless labels ("BD_ROM") by a hash of their
+    # file sizes. Needs thediscdb.com reachable (some DNS filters block it).
+    api: https://thediscdb.com/graphql
 
 selection:
   # Audio/subtitle languages to keep (ISO 639-2 codes). Empty = keep every

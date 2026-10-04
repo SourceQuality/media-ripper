@@ -148,6 +148,9 @@ type TheDiscDB struct {
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Repo is the GitHub repository holding the catalogue data.
 	Repo string `yaml:"repo" json:"repo"`
+	// API is the GraphQL endpoint used to identify a disc by its content
+	// hash when its label says nothing.
+	API string `yaml:"api" json:"api"`
 }
 
 // OCR identifies discs with useless labels by reading the title card and
@@ -280,7 +283,7 @@ func Default() Config {
 		Notify:  Notify{Discord: Discord{ApplicationID: DefaultDiscordApp}},
 		Updates: Updates{Check: true, Repo: "SourceQuality/media-ripper"},
 		Metadata: Metadata{
-			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data"},
+			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data", API: "https://thediscdb.com/graphql"},
 			Provider:  "auto",
 			Language:  "en-US",
 			Timeout:   Duration(20 * time.Second),
