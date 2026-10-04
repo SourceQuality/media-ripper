@@ -51,6 +51,7 @@ func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Di
 	job.logf("thediscdb: %s, %s (%d of %d titles match)", match.Release, match.Disc.Name, match.Matched, match.Compared)
 	job.set(func(j *Job) {
 		j.Catalog = fmt.Sprintf("TheDiscDB (%s, %s)", releaseName(match.Release), match.Disc.Name)
+		j.CatalogMatched, j.CatalogCompared = match.Matched, match.Compared
 	})
 	entries := map[int]selector.CatalogEntry{}
 	for tid, t := range match.ByID {

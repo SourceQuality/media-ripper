@@ -103,6 +103,7 @@
         : ['postprocessing', 'delivering'].includes(j.stage) && j.total ? (j.outputs || []).length / j.total * 100 : -1;
       body = `<div class="row"><span class="title">${esc(jobTitle(j))}</span><span class="stage">${esc(stageText(j))}</span><span class="spacer"></span>
         <button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
+        ${j.verification ? `<div class="sub muted verify">${esc(j.verification)}</div>` : ''}
         <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
         ${liveList(j)}`;
     } else {
@@ -139,6 +140,7 @@
     return j.label || 'Unidentified disc';
   };
   const matchLine = j => {
+    if (j.verification) return j.verification;
     if (j.catalog) return `Titles from ${j.catalog}`;
     // Records saved before the catalogue name was kept still say so in
     // their pick reasons ("TheDiscDB: S01E08").
