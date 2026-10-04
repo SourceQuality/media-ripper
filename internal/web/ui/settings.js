@@ -125,6 +125,8 @@
       { key: 'notify.discord.bot_token', label: 'Bot token', type: 'secret', hint: 'From the application\'s Bot page in the Discord developer portal' },
       { key: 'notify.discord.channel_id', label: 'Channel ID', type: 'text', hint: 'Developer mode on, then right-click the channel → Copy Channel ID' },
       { key: 'notify.discord.webhook_url', label: 'Or: channel webhook URL', type: 'secret', wide: true, hint: 'Channel settings → Integrations → Webhooks. Used when no bot token and channel are set' },
+      { key: 'notify.discord.buttons', label: 'Buttons on bot messages', type: 'bool', hint: 'Approve / Discard a review, Cancel a rip, Eject after a failure' },
+      { key: 'notify.discord.allowed_users', label: 'Who may press them', type: 'lines', hint: 'Discord user ids, one per line; empty = anyone who can see the channel' },
       { key: 'discord.test', label: 'Check it', type: 'action', action: 'test-notify', text: 'Send test message', hint: 'Uses the saved settings: save first' },
     ]},
     { title: 'Updates', fields: [

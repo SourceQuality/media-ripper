@@ -257,6 +257,11 @@ type Discord struct {
 	BotToken      string `yaml:"bot_token" json:"bot_token"`
 	ChannelID     string `yaml:"channel_id" json:"channel_id"`
 	WebhookURL    string `yaml:"webhook_url" json:"webhook_url"`
+	// Buttons puts Approve / Discard / Cancel / Eject on bot messages.
+	// AllowedUsers limits who may press them (Discord user ids); empty
+	// means anyone who can see the channel.
+	Buttons      bool     `yaml:"buttons" json:"buttons"`
+	AllowedUsers []string `yaml:"allowed_users" json:"allowed_users"`
 }
 
 // DefaultDiscordApp is the media-ripper Discord application.
@@ -294,7 +299,7 @@ func Default() Config {
 			Retries:       1,
 			WriteSettings: true,
 		},
-		Notify:  Notify{Discord: Discord{ApplicationID: DefaultDiscordApp}},
+		Notify:  Notify{Discord: Discord{ApplicationID: DefaultDiscordApp, Buttons: true}},
 		Updates: Updates{Check: true, Repo: "SourceQuality/media-ripper"},
 		Metadata: Metadata{
 			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data", API: "https://thediscdb.com/graphql"},
@@ -471,6 +476,11 @@ func (c *Config) NeedsRestart(next *Config) []string {
 	}
 	if c.Log != next.Log {
 		out = append(out, "log")
+	}
+	// The bot's Gateway connection is opened at start.
+	if c.Notify.Discord.BotToken != next.Notify.Discord.BotToken || c.Notify.Discord.Buttons != next.Notify.Discord.Buttons ||
+		strings.Join(c.Notify.Discord.AllowedUsers, ",") != strings.Join(next.Notify.Discord.AllowedUsers, ",") {
+		out = append(out, "notify.discord")
 	}
 	return out
 }
