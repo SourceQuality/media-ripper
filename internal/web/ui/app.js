@@ -24,8 +24,25 @@
     return j.label || 'Disc';
   };
   const stageText = j => {
-    if (j.stage === 'ripping' && j.progress >= 0) return `${j.message} · ${Math.floor(j.progress)}%${j.eta ? ' · ' + j.eta : ''}`;
+    if (j.stage === 'ripping' && j.progress >= 0 && !(j.activities || []).length) return `${j.message} · ${Math.floor(j.progress)}%${j.eta ? ' · ' + j.eta : ''}`;
     return j.message || j.stage;
+  };
+
+  const fmtBytes = n => n >= 1e9 ? (n / 1e9).toFixed(2) + ' GB' : (n / 1e6).toFixed(0) + ' MB';
+  const fmtSpeed = n => n > 0 ? (n / 1e6).toFixed(1) + ' MB/s' : '';
+  const fmtETA = s => {
+    if (!s || s <= 0) return '';
+    const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
+    return (h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`) + ' left';
+  };
+  const actName = { rip: 'Ripping', remux: 'Remuxing', copy: 'Copying' };
+  const activity = a => {
+    const size = a.total > 0 ? `${fmtBytes(a.done)} / ${fmtBytes(a.total)}` : fmtBytes(a.done);
+    const nums = [size, fmtSpeed(a.speed), fmtETA(a.eta_seconds)].filter(Boolean).join(' · ');
+    const pct = a.percent >= 0 ? a.percent : -1;
+    return `<div class="act"><div class="row"><span class="kind">${esc(actName[a.kind] || a.kind)}</span><span>${esc(a.item)}</span>
+      <span class="spacer"></span><span class="nums">${esc(nums)}</span></div>
+      <div class="bar small ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div></div>`;
   };
   const terminal = s => ['done', 'failed', 'skipped', 'cancelled'].includes(s);
 
@@ -33,10 +50,13 @@
     const j = d.job && !terminal(d.job.stage) ? d.job : null;
     let body;
     if (j) {
-      const pct = j.stage === 'ripping' && j.progress >= 0 ? j.overall : -1;
+      // Ripping: progress across all titles. Afterwards: titles delivered.
+      const pct = j.stage === 'ripping' && j.progress >= 0 ? j.overall
+        : ['postprocessing', 'delivering'].includes(j.stage) && j.total ? (j.outputs || []).length / j.total * 100 : -1;
       body = `<div class="row"><span class="title">${esc(jobTitle(j))}</span><span class="stage">${esc(stageText(j))}</span><span class="spacer"></span>
         <button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
-        <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>`;
+        <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
+        ${(j.activities || []).map(activity).join('')}`;
     } else {
       const status = d.status === 'disc-ok' ? (d.ignored ? 'Disc already ripped' : (d.label || 'Disc inserted')) : d.status === 'tray-open' ? 'Tray open' : d.status === 'no-disc' ? 'Empty' : d.status;
       const last = d.job ? `<span class="stage ${esc(d.job.stage)}">${esc(jobTitle(d.job))} · ${esc(d.job.stage)}</span>` : '';

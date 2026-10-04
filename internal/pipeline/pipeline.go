@@ -982,12 +982,28 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 			}
 		}
 		var plog progressLog
+		// MakeMKV runs a short analysis phase before "Saving to MKV file";
+		// only the save moves the title's bytes, so only it is metered.
+		var rate meter
+		saving := false
 		file, err := job.rt.mk.Rip(ctx, job.Drive, pick.Title, dir, func(p makemkv.Progress) {
+			if p.Task != "" {
+				saving = strings.Contains(strings.ToLower(p.Task), "sav")
+				rate.reset()
+			}
+			var eta time.Duration
+			if saving && p.Percent >= 0 && pick.Title.SizeBytes > 0 {
+				done := int64(float64(pick.Title.SizeBytes) * p.Percent / 100)
+				_, eta = job.track(&rate, "rip", pickName(pick), done, pick.Title.SizeBytes)
+			}
 			job.set(func(j *Job) {
 				if p.Percent >= 0 {
 					j.Progress = p.Percent
 					j.Overall = (float64(idx) + p.Percent/100) / float64(total) * 100
-					if p.Remaining > 0 {
+					switch {
+					case eta > 0:
+						j.ETA = eta.String()
+					case p.Remaining > 0:
 						j.ETA = p.Remaining.Round(time.Second).String()
 					}
 				}
@@ -999,6 +1015,7 @@ func (m *Manager) ripPick(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 				m.log.Info("rip progress", "drive", job.Drive, "job", job.ID, "pct", int(p.Percent), "eta", p.Remaining.Round(time.Second))
 			}
 		})
+		job.untrack("rip")
 		if err == nil {
 			job.logf("ripped %s", filepath.Base(file))
 			return file, nil
@@ -1050,7 +1067,12 @@ func (m *Manager) postProcess(ctx context.Context, job *Job, pick selector.Pick,
 		return file, nil
 	}
 	job.stepStage(StagePostProcess, "remuxing "+pickName(pick))
+	var rate meter
+	defer job.untrack("remux")
 	res, err := postprocess.Run(ctx, file, mkvTitle(job, pick), postprocess.Options{
+		Progress: func(done, total int64) {
+			job.track(&rate, "remux", pickName(pick), done, total)
+		},
 		Mode:          cfg.PostProcess.Mode,
 		Tool:          cfg.PostProcess.Tool,
 		Languages:     cfg.Selection.Languages,
@@ -1140,7 +1162,11 @@ func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 	if err := os.MkdirAll(filepath.Dir(dest), os.FileMode(cfg.Output.DirMode)); err != nil {
 		return Output{}, fmt.Errorf("create %s: %w", filepath.Dir(dest), err)
 	}
-	size, err := moveFile(ctx, file, dest, os.FileMode(cfg.Output.FileMode))
+	var rate meter
+	size, err := moveFile(ctx, file, dest, os.FileMode(cfg.Output.FileMode), func(done, total int64) {
+		job.track(&rate, "copy", pickName(pick), done, total)
+	})
+	job.untrack("copy")
 	if err != nil {
 		return Output{}, fmt.Errorf("deliver %s: %w", dest, err)
 	}
@@ -1186,7 +1212,7 @@ func uniquePath(p string) string {
 
 // moveFile renames when possible, otherwise copies through a temp name,
 // verifies the size and removes the source. Returns the final size.
-func moveFile(ctx context.Context, src, dst string, mode os.FileMode) (int64, error) {
+func moveFile(ctx context.Context, src, dst string, mode os.FileMode, progress func(done, total int64)) (int64, error) {
 	st, err := os.Stat(src)
 	if err != nil {
 		return 0, err
@@ -1208,7 +1234,11 @@ func moveFile(ctx context.Context, src, dst string, mode os.FileMode) (int64, er
 	if err != nil {
 		return 0, err
 	}
-	n, err := copyCtx(ctx, out, in)
+	n, err := copyCtx(ctx, out, in, func(done int64) {
+		if progress != nil {
+			progress(done, st.Size())
+		}
+	})
 	if err == nil {
 		err = out.Sync()
 	}
@@ -1231,10 +1261,17 @@ func moveFile(ctx context.Context, src, dst string, mode os.FileMode) (int64, er
 	return n, nil
 }
 
-func copyCtx(ctx context.Context, dst io.Writer, src io.Reader) (int64, error) {
+// copyCtx copies until EOF or cancellation, reporting the running total
+// about twice a second.
+func copyCtx(ctx context.Context, dst io.Writer, src io.Reader, progress func(done int64)) (int64, error) {
 	buf := make([]byte, 4<<20)
 	var total int64
+	var last time.Time
 	for {
+		if progress != nil && time.Since(last) >= 500*time.Millisecond {
+			progress(total)
+			last = time.Now()
+		}
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}

@@ -81,6 +81,9 @@ type Job struct {
 	Log       []LogLine           `json:"log,omitempty"`
 	Current   int                 `json:"current,omitempty"` // 1-based pick in progress
 	Total     int                 `json:"total,omitempty"`   // number of picks
+	// Activities are the steps moving data right now. A rip and the
+	// delivery of an earlier title can run at the same time.
+	Activities []Activity `json:"activities,omitempty"`
 
 	cancel func()
 	// ripping is set while titles are still being read from the disc and
@@ -88,6 +91,53 @@ type Job struct {
 	// the job log so the stage keeps showing the rip.
 	ripping bool
 	rt      *runtime
+}
+
+// Activity is one data-moving step in progress, with its throughput.
+type Activity struct {
+	Kind       string  `json:"kind"` // rip | remux | copy
+	Item       string  `json:"item"` // "S01E03", "title 2"
+	Done       int64   `json:"done"`
+	Total      int64   `json:"total,omitempty"` // 0 when the final size is unknown
+	Percent    float64 `json:"percent"`         // -1 when unknown
+	Speed      float64 `json:"speed"`           // bytes per second over the last few seconds
+	ETASeconds int64   `json:"eta_seconds,omitempty"`
+}
+
+// track reports progress of one activity; done and total are bytes. It
+// returns the speed and ETA so callers can mirror them elsewhere.
+func (j *Job) track(m *meter, kind, item string, done, total int64) (float64, time.Duration) {
+	speed, eta := m.add(done, total)
+	a := Activity{Kind: kind, Item: item, Done: done, Total: total, Percent: -1, Speed: speed, ETASeconds: int64(eta / time.Second)}
+	if total > 0 {
+		a.Percent = float64(done) / float64(total) * 100
+		if a.Percent > 100 {
+			a.Percent = 100
+		}
+	}
+	j.set(func(j *Job) {
+		for i := range j.Activities {
+			if j.Activities[i].Kind == kind {
+				j.Activities[i] = a
+				return
+			}
+		}
+		j.Activities = append(j.Activities, a)
+	})
+	return speed, eta
+}
+
+// untrack removes a finished activity.
+func (j *Job) untrack(kind string) {
+	j.set(func(j *Job) {
+		out := j.Activities[:0]
+		for _, a := range j.Activities {
+			if a.Kind != kind {
+				out = append(out, a)
+			}
+		}
+		j.Activities = out
+	})
 }
 
 // TitleSummary is a compact view of a scanned title for the UI and history.
@@ -170,6 +220,7 @@ func (j *Job) setStage(s Stage, msg string) {
 		j.Progress = -1
 		j.ETA = ""
 		if s.Terminal() {
+			j.Activities = nil
 			j.FinishedAt = time.Now()
 			j.Elapsed = j.FinishedAt.Sub(j.StartedAt).Round(time.Second).String()
 		}
@@ -187,6 +238,7 @@ func (j *Job) Snapshot() Job {
 		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected,
 	}
 	c.Warnings = append([]string(nil), j.Warnings...)
+	c.Activities = append([]Activity(nil), j.Activities...)
 	if !c.Stage.Terminal() {
 		c.Elapsed = time.Since(j.StartedAt).Round(time.Second).String()
 	}
