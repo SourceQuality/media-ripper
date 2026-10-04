@@ -60,12 +60,38 @@
   const loadFiles = id => files.id === id && files.inv ? Promise.resolve() :
     fetch(`/api/jobs/${encodeURIComponent(id)}/files`).then(r => r.ok ? r.json() : null).then(inv => { files = { id, inv: inv && inv.files ? inv : null, open: files.id === id && files.open }; }).catch(() => {});
 
+  // The folder thediscdb.com's "Add a disc" asks for, rebuilt from what
+  // was kept after the rip: on the NAS share, or as a zip.
+  const fmtSize = n => n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(n / 1e6)) + ' MB';
+  const folderCard = (id, f) => {
+    if (!f) return '';
+    let body;
+    if (f.kept) {
+      body = `<div class="row actions-row">
+          ${f.nas ? `<span>On the NAS: <code>${esc(f.nas)}</code></span><button data-folder="remove">Remove from NAS</button>`
+            : '<button class="primary" data-folder="nas">Put the folder on the NAS</button>'}
+          <a class="btn" href="/api/jobs/${encodeURIComponent(id)}/disc-folder.zip" download>Download zip</a>
+        </div>
+        <p class="muted small">The NAS copy takes almost no space. The zip downloads as roughly ${esc(fmtSize(f.bytes * 0.0013))} (about two minutes to download for a 75 GB disc), but its video files are placeholders that unzip to ${esc(fmtSize(f.bytes))} of zeros: delete the folder once the disc is added.</p>`;
+    } else if (f.waiting) {
+      body = '<p><strong>Put the disc in the drive now.</strong> It is read (a few seconds, no rip) and ejected.</p>';
+    } else {
+      body = `<div class="row actions-row"><button data-folder="read">Read from disc</button></div>
+        <p class="muted small">The disc's small files were not kept${f.files ? '' : ' (ripped before this was added)'}. Click, then put the disc in: it is read and ejected, not ripped again.</p>`;
+    }
+    return `<div class="card"><h2>Add this disc to TheDiscDB</h2>
+      <p class="small">On thediscdb.com, <em>Contribute → Add Disc</em> asks you to <em>Select Disc Root Folder</em>: pick the <code>${esc(f.name)}</code> folder (the one holding <code>BDMV</code>). Then, on the disc's page, upload the disc manifest under <em>Advanced</em>.</p>
+      ${body}</div>`;
+  };
+
   let refresh;
   const renderDetail = id => {
     clearTimeout(refresh);
     const view = $('#detail-view');
     if (!id) { view.innerHTML = '<div class="card empty">Choose a disc</div>'; return; }
-    fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => loadFiles(id).then(() => j)).then(j => {
+    let folder = null;
+    const loadFolder = () => fetch(`/api/jobs/${encodeURIComponent(id)}/disc-folder`).then(r => r.ok ? r.json() : null).then(f => { folder = f; }).catch(() => {});
+    fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => Promise.all([loadFiles(id), loadFolder()]).then(() => j)).then(j => {
       if (j.error) { view.innerHTML = `<div class="card empty">${esc(j.error)}</div>`; return; }
       const discdb = j.hash_matched ? 'Matched: this exact disc, by its content hash' : j.content_hash ? 'No disc with this content hash' : '';
       const ids = [['Disc label', j.label], ['Fingerprint', j.fingerprint], ['Content hash', j.content_hash], ['TheDiscDB', discdb], ['Catalogue', j.catalog], ['Backup', j.backup && j.backup.path], ['Drive', j.drive], ['Disc', j.disc_type],
@@ -92,6 +118,7 @@
       <div class="card"><h2>Every title on the disc</h2>
         <div class="table-wrap"><table class="titles"><thead><tr><th>Source</th><th>Length</th><th>Size</th><th>Tracks</th><th>What it is</th><th>File</th></tr></thead><tbody>${titles || '<tr><td colspan="6" class="empty">No scan recorded</td></tr>'}</tbody></table></div>
       </div>
+      ${terminal(j.stage) ? folderCard(id, folder) : ''}
       ${filesCard()}
       ${(j.log || []).length ? `<div class="card"><h2>Log</h2><pre class="log">${esc(j.log.map(l => `${new Date(l.time).toLocaleTimeString()}  ${l.message}`).join('\n'))}</pre></div>` : ''}`;
       const det = $('#files');
@@ -99,8 +126,17 @@
       view.querySelectorAll('button[data-copy]').forEach(b => b.onclick = () => {
         navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = 'Copied'; }, () => { b.textContent = 'Select it to copy'; });
       });
-      // A disc still being ripped: keep its state and log current.
-      if (!terminal(j.stage)) refresh = setTimeout(() => { if (decodeURIComponent(location.hash.slice(1)) === id) renderDetail(id); }, 5000);
+      view.querySelectorAll('button[data-folder]').forEach(b => b.onclick = () => {
+        const what = b.dataset.folder;
+        const url = `/api/jobs/${encodeURIComponent(id)}/disc-folder/${what === 'read' ? 'read' : 'nas'}`;
+        b.disabled = true;
+        if (what === 'nas') b.textContent = 'Writing…';
+        fetch(url, { method: what === 'remove' ? 'DELETE' : 'POST' }).then(r => r.json()).then(res => {
+          if (res.error) alert(res.error);
+        }).finally(() => renderDetail(id));
+      });
+      // A disc still being ripped, or awaited for its folder: keep it current.
+      if (!terminal(j.stage) || (folder && folder.waiting)) refresh = setTimeout(() => { if (decodeURIComponent(location.hash.slice(1)) === id) renderDetail(id); }, 5000);
     });
   };
 

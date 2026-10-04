@@ -72,6 +72,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /api/jobs/{id}/manifest", s.discManifest)
 	mux.HandleFunc("GET /api/jobs/{id}/files", s.discFiles)
+	mux.HandleFunc("GET /api/jobs/{id}/disc-folder", s.discFolder)
+	mux.HandleFunc("POST /api/jobs/{id}/disc-folder/read", s.discFolderRead)
+	mux.HandleFunc("POST /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
+	mux.HandleFunc("DELETE /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
+	mux.HandleFunc("GET /api/jobs/{id}/disc-folder.zip", s.discFolderZip)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/setup", s.authSetup)
@@ -398,6 +403,62 @@ func (s *Server) boxSets(w http.ResponseWriter, r *http.Request) {
 
 // discManifest downloads a finished disc's Optical Disc Manifest, to upload
 // on thediscdb.com/contribute.
+// discFolder says whether a disc's folder for TheDiscDB can be offered.
+func (s *Server) discFolder(w http.ResponseWriter, r *http.Request) {
+	st, err := s.Manager.DiscFolderStatus(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// discFolderRead reads the folder when the disc is next put in.
+func (s *Server) discFolderRead(w http.ResponseWriter, r *http.Request) {
+	if err := s.Manager.RequestDiscFolder(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"waiting": true})
+}
+
+// discFolderNAS puts the folder on the library share (POST) or removes it.
+func (s *Server) discFolderNAS(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if r.Method == http.MethodDelete {
+		if err := s.Manager.RemoveDiscFolderNAS(id); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	p, err := s.Manager.WriteDiscFolderNAS(id)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": p})
+}
+
+// discFolderZip streams the folder as a zip.
+func (s *Server) discFolderZip(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	st, err := s.Manager.DiscFolderStatus(id)
+	if err != nil || !st.Kept {
+		if err == nil {
+			err = errors.New("the disc's folder was not kept; read it from the disc first")
+		}
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(st.Name, `"`, "_")+`.zip"`)
+	if err := s.Manager.WriteDiscFolderZip(w, id); err != nil && s.Logger != nil {
+		s.Logger.Warn("disc folder zip", "job", id, "err", err)
+	}
+}
+
 // discFiles lists the files on a disc, as read for its content hash.
 func (s *Server) discFiles(w http.ResponseWriter, r *http.Request) {
 	inv, err := s.Manager.DiscFiles(r.PathValue("id"))

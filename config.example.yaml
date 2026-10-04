@@ -102,6 +102,11 @@ metadata:
     # Identifies discs with useless labels ("BD_ROM") by a hash of their
     # file sizes. Needs thediscdb.com reachable (some DNS filters block it).
     api: https://thediscdb.com/graphql
+    # To add a disc, thediscdb.com asks for the disc's folder. After the rip
+    # media-ripper keeps the disc's small metadata files (a few MB) so Disc
+    # details can give you that folder (on the NAS or as a zip) without the
+    # disc: unmatched (discs TheDiscDB does not know yet) | always | off.
+    disc_folder: unmatched
 
 selection:
   # Audio/subtitle languages to keep (ISO 639-2 codes). Empty = keep every
