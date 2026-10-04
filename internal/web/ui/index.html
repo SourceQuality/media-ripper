@@ -16,15 +16,25 @@
   <a class="btn" href="settings.html">Settings</a>
   <button id="theme" class="icon" title="Theme" aria-label="Toggle theme">◐</button>
 </header>
-<main>
-  <section id="notices"></section>
-  <section id="reviews"></section>
-  <section id="drives"></section>
-  <section id="boxsets"></section>
-  <section>
-    <h2>Recent</h2>
-    <div id="recent"></div>
-  </section>
+<main class="home">
+  <nav id="home-nav">
+    <ul>
+      <li><a href="#drives" data-panel="drives">Drives <span class="count" id="count-drives"></span></a></li>
+      <li><a href="#review" data-panel="review">Waiting for review <span class="count" id="count-review"></span></a></li>
+      <li><a href="#boxsets" data-panel="boxsets">Box sets <span class="count" id="count-boxsets"></span></a></li>
+      <li><a href="#recent" data-panel="recent">Recent <span class="count" id="count-recent"></span></a></li>
+    </ul>
+    <select id="panel-select" aria-label="Show">
+      <option value="drives">Drives</option><option value="review">Waiting for review</option><option value="boxsets">Box sets</option><option value="recent">Recent</option>
+    </select>
+  </nav>
+  <div class="panels">
+    <section id="notices"></section>
+    <section class="panel" data-panel="drives"><h2>Drives</h2><div id="drives"></div></section>
+    <section class="panel" data-panel="review"><h2>Waiting for review</h2><div id="reviews"></div></section>
+    <section class="panel" data-panel="boxsets"><h2>Box sets</h2><div id="boxsets"></div></section>
+    <section class="panel" data-panel="recent"><h2>Recent</h2><div id="recent"></div></section>
+  </div>
 </main>
 <dialog id="detail"><div class="dialog-head"><strong id="detail-title"></strong><button class="icon" id="detail-close" aria-label="Close">✕</button></div><pre id="detail-log"></pre></dialog>
 <script src="theme.js"></script>

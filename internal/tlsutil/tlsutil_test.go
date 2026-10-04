@@ -14,7 +14,7 @@ import (
 func TestSelfSigned(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
-	names := []string{"localhost", "127.0.0.1", "jacktheripper-arm", "jacktheripper-arm.ts.brello.cloud", "100.64.0.5"}
+	names := []string{"localhost", "127.0.0.1", "ripper", "ripper.example.ts.net", "100.64.0.10"}
 	c1, err := SelfSigned(dir, names, now)
 	if err != nil {
 		t.Fatal(err)

@@ -225,6 +225,7 @@
   const renderRecent = () => {
     const cards = history.filter(j => terminal(j.stage)).map(historyCard);
     $('#recent').innerHTML = cards.length ? cards.join('') : '<div class="card empty">Nothing yet</div>';
+    setCount('recent', cards.length);
   };
 
   // Banners for things that need a person: storage that stopped answering,
@@ -249,7 +250,8 @@
     const key = list.map(j => j.id).join(',');
     if (key === reviewKey) return;
     reviewKey = key;
-    $('#reviews').innerHTML = list.length ? `<h2>Waiting for review</h2>${list.map(reviewCard).join('')}` : '';
+    $('#reviews').innerHTML = list.length ? list.map(reviewCard).join('') : '<div class="card empty">Nothing is waiting. Discs whose titles could not be verified stop here before import.</div>';
+    setCount('review', list.length, list.length > 0);
     for (const card of document.querySelectorAll('.review')) wireReview(card);
   };
 
@@ -324,15 +326,38 @@
     };
   };
 
+  // One panel at a time, picked in the sidebar (a menu on phones); counts
+  // in the sidebar say where there is something to look at.
+  const PANELS = ['drives', 'review', 'boxsets', 'recent'];
+  const setCount = (panel, n, highlight) => {
+    const el = document.getElementById('count-' + panel);
+    if (!el) return;
+    el.textContent = n ? n : '';
+    el.classList.toggle('hot', !!highlight);
+  };
+  const showPanel = () => {
+    const want = location.hash.slice(1);
+    const cur = PANELS.includes(want) ? want : 'drives';
+    document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.dataset.panel === cur));
+    document.querySelectorAll('#home-nav a').forEach(a => a.classList.toggle('sel', a.dataset.panel === cur));
+    const sel = document.getElementById('panel-select');
+    if (sel) sel.value = cur;
+  };
+  window.addEventListener('hashchange', showPanel);
+  const panelSelect = document.getElementById('panel-select');
+  if (panelSelect) panelSelect.onchange = e => { location.hash = e.target.value; };
+  showPanel();
+
   // Box sets in progress: which discs of each catalogued release are done.
   const renderBoxSets = sets => {
-    $('#boxsets').innerHTML = sets.length ? `<h2>Box sets</h2>${sets.map(b => `<div class="card boxset">
+    setCount('boxsets', sets.length);
+    $('#boxsets').innerHTML = !sets.length ? '<div class="card empty">Discs matched in TheDiscDB show up here with the rest of their set.</div>' : `${sets.map(b => `<div class="card boxset">
       <div class="row"><span class="title">${esc(b.title)}${b.year ? ` (${b.year})` : ''}</span><span class="muted">${esc(b.release_name)}</span><span class="spacer"></span>
         <span class="muted">${b.total ? `${b.ripped} of ${plural(b.total, 'disc')}` : plural(b.ripped, 'disc') + ' ripped'}</span></div>
       ${b.groups.map(g => `<div class="group"><span class="gname">${esc(g.name)}</span><span class="chips">${g.discs.map(d =>
         `<span class="chip ${d.ripped ? 'ok' : 'missing'}" title="${esc(d.name)}${d.ripped ? ' · ripped ' + esc(fmtWhen(d.at)) : ' · not ripped yet'}">${esc(d.short)}${d.ripped ? ' ✓' : ''}</span>`).join('')}</span>
         <span class="muted">${g.discs.filter(d => d.ripped).length}/${g.discs.length}</span></div>`).join('')}
-    </div>`).join('')}` : '';
+    </div>`).join('')}`;
   };
 
   const render = s => {
@@ -340,6 +365,8 @@
     $('#notices').innerHTML = notices(s);
     models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
     $('#drives').innerHTML = s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>';
+    const busy = s.drives.filter(d => d.job && !terminal(d.job.stage)).length;
+    setCount('drives', busy ? busy + ' ripping' : '', busy > 0);
     renderRecent();
   };
 
