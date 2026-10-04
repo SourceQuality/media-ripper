@@ -196,12 +196,28 @@ func mergeKeys(a, b []string) []string {
 }
 
 func (s *Server) job(w http.ResponseWriter, r *http.Request) {
-	j, ok := s.Manager.Job(r.PathValue("id"))
-	if !ok {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	id := r.PathValue("id")
+	if j, ok := s.Manager.Job(id); ok {
+		writeJSON(w, http.StatusOK, j)
 		return
 	}
-	writeJSON(w, http.StatusOK, j)
+	// Jobs from before a restart are only in the saved history, which
+	// keeps the outcome but not the step-by-step log.
+	h, err := s.Store.History(0)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	for _, raw := range h {
+		var rec struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &rec) == nil && rec.ID == id {
+			writeJSON(w, http.StatusOK, raw)
+			return
+		}
+	}
+	writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 }
 
 func (s *Server) cancel(w http.ResponseWriter, r *http.Request) {
