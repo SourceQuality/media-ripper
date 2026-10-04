@@ -109,7 +109,7 @@
       const pct = j.stage === 'ripping' && j.progress >= 0 ? j.overall
         : ['postprocessing', 'delivering'].includes(j.stage) && j.total ? (j.outputs || []).length / j.total * 100 : -1;
       body = `<div class="row"><span class="title">${esc(jobTitle(j))}</span><span class="stage">${esc(stageText(j))}</span><span class="spacer"></span>
-        <button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
+        <a class="btn" href="history.html#${encodeURIComponent(j.id)}">Disc details</a><button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
         ${j.verification ? `<div class="sub muted verify">${esc(j.verification)}</div>` : ''}
         <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
         ${liveList(j)}`;

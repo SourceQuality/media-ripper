@@ -71,6 +71,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/stats", s.stats)
 	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /api/jobs/{id}/manifest", s.discManifest)
+	mux.HandleFunc("GET /api/jobs/{id}/files", s.discFiles)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/setup", s.authSetup)
@@ -397,6 +398,16 @@ func (s *Server) boxSets(w http.ResponseWriter, r *http.Request) {
 
 // discManifest downloads a finished disc's Optical Disc Manifest, to upload
 // on thediscdb.com/contribute.
+// discFiles lists the files on a disc, as read for its content hash.
+func (s *Server) discFiles(w http.ResponseWriter, r *http.Request) {
+	inv, err := s.Manager.DiscFiles(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inv)
+}
+
 func (s *Server) discManifest(w http.ResponseWriter, r *http.Request) {
 	m, err := s.Manager.DiscManifest(r.PathValue("id"), s.Version)
 	if err != nil {
