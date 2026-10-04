@@ -64,6 +64,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reviews/{id}/discard", s.discardReview)
 	mux.HandleFunc("GET /api/lookup", s.lookup)
 	mux.HandleFunc("GET /api/boxsets", s.boxSets)
+	mux.HandleFunc("GET /api/jobs/{id}/manifest", s.discManifest)
+	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	return logRequests(mux, s.Logger)
 }
 
@@ -364,4 +366,36 @@ func (s *Server) boxSets(w http.ResponseWriter, r *http.Request) {
 		sets = []pipeline.BoxSetView{}
 	}
 	writeJSON(w, http.StatusOK, sets)
+}
+
+// discManifest downloads a finished disc's Optical Disc Manifest, to upload
+// on thediscdb.com/contribute.
+func (s *Server) discManifest(w http.ResponseWriter, r *http.Request) {
+	m, err := s.Manager.DiscManifest(r.PathValue("id"), s.Version)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	name := strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == '"' || r < 32 {
+			return '_'
+		}
+		return r
+	}, m.Disc.Name)
+	if name == "" {
+		name = "disc"
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`.odm.json"`)
+	writeJSON(w, http.StatusOK, m)
+}
+
+// contribution is the title-by-title mapping to enter with the manifest.
+func (s *Server) contribution(w http.ResponseWriter, r *http.Request) {
+	text, err := s.Manager.ContributionText(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write([]byte(text))
 }

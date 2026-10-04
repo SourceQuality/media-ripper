@@ -45,9 +45,9 @@ type Deps struct {
 	OCRTools []string
 	// Catalog replaces TheDiscDB (tests).
 	Catalog Catalog
-	// ContentHash computes a disc's TheDiscDB content hash from its file
-	// sizes (tests replace the UDF reader).
-	ContentHash func(device string) (string, error)
+	// DiscFiles lists a disc's files and sizes from its UDF filesystem
+	// (tests replace the reader).
+	DiscFiles func(device string) ([]udf.File, error)
 }
 
 // runtime is one immutable configuration generation with the components
@@ -634,6 +634,14 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		if err != nil {
 			return err
 		}
+		out.RippedAs = filepath.Base(files[i])
+		job.set(func(j *Job) {
+			for k := range j.Outputs {
+				if j.Outputs[k].Path == out.Path {
+					j.Outputs[k].RippedAs = out.RippedAs
+				}
+			}
+		})
 		if err := rs.markDelivered(sel.Picks[i].Title.ID, out); err != nil {
 			log.Warn("resume state", "err", err)
 		}
@@ -796,6 +804,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		}
 		_ = os.RemoveAll(workDir)
 		m.markBoxSet(snap)
+		m.saveInventory(job)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
 		ev := m.event(job, "done")
 		if snap.Stage == StageReview {
@@ -1485,24 +1494,24 @@ func destPath(cfg *config.Config, rt *runtime, s Job, pick selector.Pick, ext st
 // MakeMKV's scan so the two never read the drive at once; a failure only
 // means the hash is not available.
 func (m *Manager) hashDisc(job *Job) {
-	fn := m.deps.ContentHash
-	if fn == nil {
-		fn = func(device string) (string, error) {
-			files, err := udf.ListDevice(device)
-			if err != nil {
-				return "", err
-			}
-			return udf.ContentHash(files)
-		}
+	list := m.deps.DiscFiles
+	if list == nil {
+		list = udf.ListDevice
 	}
 	type result struct {
-		hash string
-		err  error
+		files []udf.File
+		hash  string
+		err   error
 	}
 	done := make(chan result, 1)
 	go func() {
-		h, err := fn(job.Drive)
-		done <- result{h, err}
+		files, err := list(job.Drive)
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		h, err := udf.ContentHash(files)
+		done <- result{files, h, err}
 	}()
 	select {
 	case r := <-done:
@@ -1510,8 +1519,9 @@ func (m *Manager) hashDisc(job *Job) {
 			job.logf("content hash: %v", r.err)
 			return
 		}
-		job.set(func(j *Job) { j.ContentHash = r.hash })
-		job.logf("content hash %s", r.hash)
+		// The inventory is kept for the disc manifest (TheDiscDB export).
+		job.set(func(j *Job) { j.ContentHash, j.discFiles = r.hash, r.files })
+		job.logf("content hash %s (%d files on the disc)", r.hash, len(r.files))
 	case <-time.After(time.Minute):
 		job.logf("content hash: the disc's file list took over a minute; skipped")
 	}

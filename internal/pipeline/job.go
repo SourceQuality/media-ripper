@@ -8,6 +8,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/selector"
+	"github.com/sourcequality/media-ripper/internal/udf"
 )
 
 // Stage is where a job is in the pipeline.
@@ -52,6 +53,8 @@ type Output struct {
 	Size     int64         `json:"size"`
 	TitleID  int           `json:"title_id"`
 	Duration time.Duration `json:"duration"`
+	// RippedAs is the file name MakeMKV wrote ("title_t06.mkv").
+	RippedAs string `json:"ripped_as,omitempty"`
 	// Import is what Radarr/Sonarr did with the file: "imported", or
 	// "not imported: <reason>". Empty when no app takes the files.
 	Import string `json:"import,omitempty"`
@@ -106,6 +109,9 @@ type Job struct {
 	Activities []Activity `json:"activities,omitempty"`
 
 	cancel func()
+	// discFiles is the disc's file inventory, saved with the job for the
+	// disc manifest; not part of the snapshot (it can be long).
+	discFiles []udf.File
 	// ripping is set while titles are still being read from the disc and
 	// earlier ones are remuxed and delivered alongside; their steps go to
 	// the job log so the stage keeps showing the rip.
@@ -177,6 +183,7 @@ type TitleSummary struct {
 	Duration  time.Duration `json:"duration"`
 	Chapters  int           `json:"chapters"`
 	Size      string        `json:"size,omitempty"`
+	SizeBytes int64         `json:"size_bytes,omitempty"`
 	Audio     int           `json:"audio"`
 	Subtitles int           `json:"subtitles"`
 	Video     string        `json:"video,omitempty"`
@@ -186,7 +193,7 @@ type TitleSummary struct {
 func summarize(d *makemkv.Disc) []TitleSummary {
 	var out []TitleSummary
 	for _, t := range d.Titles {
-		s := TitleSummary{ID: t.ID, Duration: t.Duration, Chapters: t.Chapters, Size: t.Size, Audio: t.AudioCount(), Subtitles: t.SubtitleCount(), Source: t.SourceFile}
+		s := TitleSummary{ID: t.ID, Duration: t.Duration, Chapters: t.Chapters, Size: t.Size, SizeBytes: t.SizeBytes, Audio: t.AudioCount(), Subtitles: t.SubtitleCount(), Source: t.SourceFile}
 		if v := t.Video(); v != nil {
 			s.Video = v.VideoSize
 		}

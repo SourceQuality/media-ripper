@@ -3,31 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Media Ripper</title>
+<title>History · Media Ripper</title>
 <link rel="stylesheet" href="style.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%236b7cff'/%3E%3Ccircle cx='12' cy='12' r='3' fill='%23fff'/%3E%3C/svg%3E">
 </head>
 <body>
 <header>
-  <h1>Media Ripper</h1>
+  <a class="nav" href="./">Media Ripper</a>
+  <span class="muted">/ History</span>
   <div class="spacer"></div>
-  <span id="version" class="muted"></span>
-  <a class="btn" href="history.html">History</a>
   <a class="btn" href="settings.html">Settings</a>
   <button id="theme" class="icon" title="Theme" aria-label="Toggle theme">◐</button>
 </header>
-<main>
-  <section id="notices"></section>
-  <section id="reviews"></section>
-  <section id="drives"></section>
-  <section id="boxsets"></section>
-  <section>
-    <h2>Recent</h2>
-    <div id="recent"></div>
-  </section>
+<main class="history-page">
+  <aside>
+    <input id="filter" type="search" placeholder="Filter by title or label" autocomplete="off">
+    <ul id="jobs"></ul>
+  </aside>
+  <section id="detail-view"><div class="card empty">Choose a disc</div></section>
 </main>
-<dialog id="detail"><div class="dialog-head"><strong id="detail-title"></strong><button class="icon" id="detail-close" aria-label="Close">✕</button></div><pre id="detail-log"></pre></dialog>
 <script src="theme.js"></script>
-<script src="app.js"></script>
+<script src="history.js"></script>
 </body>
 </html>

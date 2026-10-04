@@ -23,6 +23,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/notify"
 	"github.com/sourcequality/media-ripper/internal/selector"
 	"github.com/sourcequality/media-ripper/internal/store"
+	"github.com/sourcequality/media-ripper/internal/udf"
 )
 
 // fakeDrive simulates a tray: tests insert a disc, the pipeline ejects it.
@@ -211,7 +212,7 @@ func setup(t *testing.T, infoText string, provider metadata.Provider) *env {
 		Logger:    log,
 		OpenDrive: func(string) (drive.Drive, error) { return drv, nil },
 		// No real disc to read; tests that need a hash set their own.
-		ContentHash: func(string) (string, error) { return "", errors.New("no disc filesystem in tests") },
+		DiscFiles: func(string) ([]udf.File, error) { return nil, errors.New("no disc filesystem in tests") },
 	})
 	return &env{cfg: &cfg, st: st, drv: drv, m: m, info: info, out: cfg.Output.Path}
 }
@@ -914,10 +915,12 @@ func TestVerification(t *testing.T) {
 // counts as verified: it is that exact catalogued disc.
 func TestHashIdentifiesJunkLabel(t *testing.T) {
 	e := setup(t, strings.ReplaceAll(movieInfo, "THE_MATRIX", "BD_ROM"), metadata.NoneProvider{})
-	e.m.deps.ContentHash = func(string) (string, error) { return "ABC123", nil }
-	e.m.deps.Catalog = &fakeCatalog{byHash: map[string]*discdb.HashMatch{"ABC123": {
+	files := []udf.File{{Path: "BDMV/STREAM/00001.m2ts", Size: 123}}
+	hash, _ := udf.ContentHash(files)
+	e.m.deps.DiscFiles = func(string) ([]udf.File, error) { return files, nil }
+	e.m.deps.Catalog = &fakeCatalog{byHash: map[string]*discdb.HashMatch{hash: {
 		Kind: discdb.Movie, Title: "The Matrix", Year: 1999, TMDBID: 603,
-		Match: discdb.Match{Release: "1999-blu-ray", Disc: discdb.Disc{Name: "Disc 1", ContentHash: "ABC123"}, Matched: 2, Compared: 3,
+		Match: discdb.Match{Release: "1999-blu-ray", Disc: discdb.Disc{Name: "Disc 1", ContentHash: hash}, Matched: 2, Compared: 3,
 			ByID: map[int]discdb.Title{0: {Item: &discdb.Item{Type: "MainMovie"}}, 1: {Item: &discdb.Item{Type: "Extra", Title: "Decoy cut"}}}},
 	}}}
 	e.m.SetConfig(e.cfg)
@@ -946,8 +949,10 @@ func TestHashIdentifiesJunkLabel(t *testing.T) {
 func TestHashConfirmsTitleMatch(t *testing.T) {
 	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, Season: 1, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "sonarr"}
 	e := setup(t, tvInfo, fakeProvider{id})
-	e.m.deps.ContentHash = func(string) (string, error) { return "FEEDF00D", nil }
-	e.m.deps.Catalog = &fakeCatalog{match: &discdb.Match{Release: "season-1-dvd", Disc: discdb.Disc{Name: "Disc 1", ContentHash: "feedf00d"}, Matched: 2, Compared: 4, ByID: map[int]discdb.Title{
+	files := []udf.File{{Path: "VIDEO_TS/VTS_01_1.VOB", Size: 1 << 30}}
+	hash, _ := udf.ContentHash(files)
+	e.m.deps.DiscFiles = func(string) ([]udf.File, error) { return files, nil }
+	e.m.deps.Catalog = &fakeCatalog{match: &discdb.Match{Release: "season-1-dvd", Disc: discdb.Disc{Name: "Disc 1", ContentHash: strings.ToLower(hash)}, Matched: 2, Compared: 4, ByID: map[int]discdb.Title{
 		1: {Item: &discdb.Item{Type: "Episode", Title: "Pilot", Season: 1, Episode: 1}},
 		2: {Item: &discdb.Item{Type: "Episode", Title: "Two", Season: 1, Episode: 2}},
 	}}}
@@ -1014,5 +1019,37 @@ func TestBoxSetBackfillFromHistory(t *testing.T) {
 	e.m.backfillBoxSets(context.Background()) // once only
 	if len(e.st.BoxSets()) != 1 {
 		t.Fatal("ran twice")
+	}
+}
+
+// A finished disc keeps its file inventory, so it can be exported as a
+// disc manifest with the title mapping for TheDiscDB.
+func TestDiscManifestExport(t *testing.T) {
+	e := setup(t, movieInfo, fakeProvider{&metadata.Identity{Kind: metadata.KindMovie, Title: "The Matrix", Year: 1999, TMDBID: 603, Runtime: 136 * time.Minute, Confidence: 1, Source: "test"}})
+	files := []udf.File{{Path: "BDMV/STREAM/00001.m2ts", Size: 32_500_000_000}, {Path: "BDMV/PLAYLIST/00800.mpls", Size: 298}, {Path: "BDMV/index.bdmv", Size: 120}}
+	e.m.deps.DiscFiles = func(string) ([]udf.File, error) { return files, nil }
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitDone(t)
+	if j.Outputs[0].RippedAs != "Disc_t00.mkv" {
+		t.Fatalf("ripped as %q", j.Outputs[0].RippedAs)
+	}
+	m, err := e.m.DiscManifest(j.ID, "v0.6.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, _ := udf.ContentHash(files)
+	if m.Disc.Format != "blu-ray" || m.Disc.Name != "THE_MATRIX" || len(m.Disc.Files) != 3 || m.Disc.Identifiers[0].Value != hash {
+		t.Fatalf("manifest = %+v", m.Disc)
+	}
+	text, err := e.m.ContributionText(j.ID)
+	if err != nil || !strings.Contains(text, "The Matrix (1999)") || !strings.Contains(text, "Main movie") || !strings.Contains(text, hash) {
+		t.Fatalf("contribution:\n%s", text)
+	}
+	if _, err := e.m.DiscManifest("nope", "v"); err == nil {
+		t.Fatal("unknown job")
 	}
 }
