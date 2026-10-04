@@ -176,6 +176,10 @@ type TheDiscDB struct {
 	// API is the GraphQL endpoint used to identify a disc by its content
 	// hash when its label says nothing.
 	API string `yaml:"api" json:"api"`
+	// DiscFolder is when to keep a disc's small metadata files after the
+	// rip, for TheDiscDB's "Add a disc" folder: unmatched (discs TheDiscDB
+	// does not know yet), always or off.
+	DiscFolder string `yaml:"disc_folder" json:"disc_folder"`
 }
 
 // OCR identifies discs with useless labels by reading the title card and
@@ -320,7 +324,7 @@ func Default() Config {
 		Updates: Updates{Check: true, Repo: "SourceQuality/media-ripper"},
 		Auth:    Auth{Enabled: true},
 		Metadata: Metadata{
-			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data", API: "https://thediscdb.com/graphql"},
+			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data", API: "https://thediscdb.com/graphql", DiscFolder: "unmatched"},
 			Provider:  "auto",
 			Language:  "en-US",
 			Timeout:   Duration(20 * time.Second),
@@ -589,6 +593,11 @@ func (c *Config) Validate() error {
 	}
 	if c.PostProcess.Mode == "custom" && len(c.PostProcess.CustomCommand) == 0 {
 		errs = append(errs, errors.New("postprocess.custom_command is required when mode is custom"))
+	}
+	switch c.Metadata.TheDiscDB.DiscFolder {
+	case "", "unmatched", "always", "off":
+	default:
+		errs = append(errs, fmt.Errorf("metadata.thediscdb.disc_folder %q must be unmatched, always or off", c.Metadata.TheDiscDB.DiscFolder))
 	}
 	switch c.Metadata.Provider {
 	case "auto", "tmdb", "arr", "none":

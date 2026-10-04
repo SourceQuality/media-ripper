@@ -21,7 +21,7 @@ func (m *Manager) saveInventory(job *Job) {
 	}
 	inv := store.DiscInventory{ContentHash: hash}
 	for _, f := range files {
-		inv.Files = append(inv.Files, store.FileEntry{Path: f.Path, Size: f.Size})
+		inv.Files = append(inv.Files, store.FileEntry{Path: f.Path, Size: f.Size, Modified: f.Modified})
 	}
 	if err := m.deps.Store.SaveInventory(id, inv); err != nil {
 		m.log.Warn("save disc inventory", "job", id, "err", err)
@@ -58,7 +58,7 @@ func (m *Manager) DiscFiles(id string) (store.DiscInventory, error) {
 		if len(files) > 0 {
 			inv := store.DiscInventory{ContentHash: hash}
 			for _, f := range files {
-				inv.Files = append(inv.Files, store.FileEntry{Path: f.Path, Size: f.Size})
+				inv.Files = append(inv.Files, store.FileEntry{Path: f.Path, Size: f.Size, Modified: f.Modified})
 			}
 			return inv, nil
 		}

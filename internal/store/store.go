@@ -408,8 +408,9 @@ type DiscInventory struct {
 
 // FileEntry is one file on a disc.
 type FileEntry struct {
-	Path string `json:"path"`
-	Size int64  `json:"size"`
+	Path     string    `json:"path"`
+	Size     int64     `json:"size"`
+	Modified time.Time `json:"modified,omitempty"`
 }
 
 // SaveInventory writes a job's disc inventory to manifests/<job>.json.

@@ -48,6 +48,7 @@
       { key: 'metadata.thediscdb.enabled', label: 'Use TheDiscDB disc maps', type: 'bool', hint: 'Episode numbers, names and extras for catalogued discs' },
       { key: 'metadata.thediscdb.repo', label: 'Catalogue repository', type: 'text', hint: 'GitHub owner/name' },
       { key: 'metadata.thediscdb.api', label: 'Content hash lookup', type: 'text', wide: true, hint: 'Identifies discs with useless labels; needs thediscdb.com reachable' },
+      { key: 'metadata.thediscdb.disc_folder', label: 'Keep disc folder for contributing', type: 'select', options: ['unmatched', 'always', 'off'], hint: 'After the rip, reads the disc\'s small metadata files (a few MB) so you can add it on thediscdb.com without the disc' },
     ]},
     { title: 'Title card OCR', fields: [
       { key: 'metadata.ocr.enabled', label: 'Enabled', type: 'bool' },

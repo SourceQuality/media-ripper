@@ -48,6 +48,9 @@ type Deps struct {
 	// DiscFiles lists a disc's files and sizes from its UDF filesystem
 	// (tests replace the reader).
 	DiscFiles func(device string) ([]udf.File, error)
+	// ReadDisc lists a disc's files and reads the contents of those want
+	// accepts, up to limit bytes (tests replace the reader).
+	ReadDisc func(device string, want func(udf.File) bool, limit int64) ([]udf.File, map[string][]byte, error)
 }
 
 // runtime is one immutable configuration generation with the components
@@ -88,6 +91,9 @@ type Manager struct {
 	// live is each job's Discord message, kept across settings changes
 	// and restarts.
 	live *notify.LiveMessages
+	// folderWanted maps a disc fingerprint to the job whose TheDiscDB
+	// folder should be read when that disc goes in.
+	folderWanted map[string]folderRequest
 }
 
 // New builds a manager. Drives are opened lazily by Run.
@@ -531,6 +537,14 @@ func (r *runner) loop(ctx context.Context) {
 		r.mu.Lock()
 		r.lastLabel = label
 		r.mu.Unlock()
+		if id, ok := r.m.takeFolderRequest(fp); ok {
+			// Put back in to read its folder for TheDiscDB, not to rip.
+			r.readRequestedFolder(ctx, d, id)
+			r.mu.Lock()
+			r.handled = ""
+			r.mu.Unlock()
+			continue
+		}
 		if fp == handled && !forced {
 			continue
 		}
@@ -789,6 +803,10 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		}
 	}
 	job.set(func(j *Job) { j.ripping = false })
+	if bgFailed() == nil && ctx.Err() == nil {
+		// While the disc is still in: for contributing it to TheDiscDB.
+		m.keepFolder(ctx, job, d.Path())
+	}
 	if bgFailed() == nil && cfg.Eject.AfterRip && cfg.Eject.OnSuccess {
 		_ = d.Lock(false)
 		if err := d.Eject(); err != nil {

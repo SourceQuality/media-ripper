@@ -19,13 +19,15 @@ import (
 	"math"
 	"os"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
 // File is a regular file on the disc.
 type File struct {
-	Path string // '/'-separated, no leading slash, e.g. "BDMV/STREAM/00001.m2ts"
-	Size int64
+	Path     string // '/'-separated, no leading slash, e.g. "BDMV/STREAM/00001.m2ts"
+	Size     int64
+	Modified time.Time // zero when the disc does not record it
 }
 
 const (
@@ -91,15 +93,37 @@ func ListDevice(path string) ([]File, error) {
 
 // List returns every regular file on the UDF filesystem read through r.
 func List(r io.ReaderAt) ([]File, error) {
-	v := &volume{r: r, visited: map[uint64]bool{}}
+	files, _, err := Read(r, nil, 0)
+	return files, err
+}
+
+// ReadDevice is Read on a device or image file.
+func ReadDevice(path string, want func(File) bool, limit int64) ([]File, map[string][]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer f.Close()
+	var r io.ReaderAt = f
+	if size, err := f.Seek(0, io.SeekEnd); err == nil && size > 0 {
+		r = io.NewSectionReader(f, 0, size)
+	}
+	return Read(r, want, limit)
+}
+
+// Read lists every regular file, like List, and also returns the contents
+// of the files want accepts, up to limit bytes in all (larger ones are
+// skipped). The contents are read in the same pass as the listing.
+func Read(r io.ReaderAt, want func(File) bool, limit int64) ([]File, map[string][]byte, error) {
+	v := &volume{r: r, visited: map[uint64]bool{}, want: want, budget: limit, data: map[string][]byte{}}
 	root, err := v.mount()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := v.walk(root, "", 0); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return v.files, nil
+	return v.files, v.data, nil
 }
 
 type volume struct {
@@ -108,6 +132,10 @@ type volume struct {
 	visited map[uint64]bool
 	entries int
 	files   []File
+
+	want   func(File) bool // files whose contents to read
+	budget int64           // bytes of contents left to read
+	data   map[string][]byte
 }
 
 // partition maps a logical block number to an absolute sector.
@@ -407,6 +435,7 @@ type entry struct {
 	size     uint64
 	alloc    int
 	ads      []byte // allocation descriptors, or the data itself if embedded
+	modified time.Time
 }
 
 func (v *volume) readEntry(p partition, block uint32) (*entry, error) {
@@ -415,12 +444,12 @@ func (v *volume) readEntry(p partition, block uint32) (*entry, error) {
 		if err != nil {
 			return nil, err
 		}
-		var hdr, lenEA, lenAD int
+		var hdr, lenEA, lenAD, mtime int
 		switch le16(b) {
 		case tagFileEntry:
-			hdr, lenEA, lenAD = 176, int(le32(b[168:])), int(le32(b[172:]))
+			hdr, lenEA, lenAD, mtime = 176, int(le32(b[168:])), int(le32(b[172:])), 84
 		case tagExtFileEnt:
-			hdr, lenEA, lenAD = 216, int(le32(b[208:])), int(le32(b[212:]))
+			hdr, lenEA, lenAD, mtime = 216, int(le32(b[208:])), int(le32(b[212:])), 92
 		case tagIndirect:
 			// Strategy 4096 chains: follow to the real entry.
 			if err := checkTag(b, tagIndirect); err != nil {
@@ -445,6 +474,7 @@ func (v *volume) readEntry(p partition, block uint32) (*entry, error) {
 			size:     le64(b[56:]),
 			alloc:    int(le16(b[34:]) & 7),
 			ads:      b[hdr+lenEA : hdr+lenEA+lenAD],
+			modified: timestamp(b[mtime : mtime+12]),
 		}, nil
 	}
 	return nil, errors.New("udf: too many indirect entries")
@@ -516,11 +546,37 @@ func (v *volume) extents(e *entry) ([]extent, error) {
 	}
 }
 
+// timestamp decodes an ECMA-167 timestamp (1/7.3); zero when unset.
+func timestamp(b []byte) time.Time {
+	tz := le16(b)
+	year, month, day := int(int16(le16(b[2:]))), int(b[4]), int(b[5])
+	if year <= 0 || month < 1 || month > 12 || day < 1 || day > 31 {
+		return time.Time{}
+	}
+	loc := time.UTC
+	if tz>>12 == 1 { // local time with its offset in minutes
+		off := int(tz & 0x0fff)
+		if off&0x800 != 0 {
+			off -= 0x1000
+		}
+		if off != -2047 && off >= -1440 && off <= 1440 {
+			loc = time.FixedZone("", off*60)
+		}
+	}
+	ns := (int(b[9])*10000 + int(b[10])*100 + int(b[11])) * 1000
+	return time.Date(year, time.Month(month), day, int(b[6]), int(b[7]), int(b[8]), ns, loc)
+}
+
 // readData reads a directory's contents.
 func (v *volume) readData(e *entry) ([]byte, error) {
 	if e.size > maxDirSize {
 		return nil, fmt.Errorf("udf: directory of %d bytes too large", e.size)
 	}
+	return v.contents(e)
+}
+
+// contents reads a file's or directory's data.
+func (v *volume) contents(e *entry) ([]byte, error) {
 	size := int(e.size)
 	if e.alloc == adEmbedded {
 		if size > len(e.ads) {
@@ -548,7 +604,7 @@ func (v *volume) readData(e *entry) ([]byte, error) {
 		}
 	}
 	if len(data) < size {
-		return nil, errors.New("udf: directory extents shorter than its size")
+		return nil, errors.New("udf: extents shorter than the size")
 	}
 	return data, nil
 }
@@ -612,7 +668,16 @@ func (v *volume) walk(dir *entry, prefix string, depth int) error {
 			if e.size > math.MaxInt64 {
 				return fmt.Errorf("udf: %s%s: size out of range", prefix, name)
 			}
-			v.files = append(v.files, File{Path: prefix + name, Size: int64(e.size)})
+			f := File{Path: prefix + name, Size: int64(e.size), Modified: e.modified}
+			v.files = append(v.files, f)
+			if v.want != nil && f.Size <= v.budget && v.want(f) {
+				data, err := v.contents(e)
+				if err != nil {
+					return fmt.Errorf("udf: read %s: %w", f.Path, err)
+				}
+				v.budget -= f.Size
+				v.data[f.Path] = data
+			}
 		}
 	}
 	return nil
