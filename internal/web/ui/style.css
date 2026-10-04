@@ -48,6 +48,24 @@ th { color: var(--muted); font-weight: 500; font-size: 12px; }
 tr:last-child td { border-bottom: 0; }
 td.actions { text-align: right; white-space: nowrap; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
+/* recent discs */
+.history .sub { font-size: 13px; margin-top: 4px; }
+.history .outcome { margin-top: 6px; font-size: 14px; }
+.history .outcome.failed { color: var(--bad); } .history .outcome.cancelled, .history .outcome.skipped { color: var(--muted); }
+.badge { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-size: 13px; font-weight: 700; color: #fff; background: var(--muted); flex: none; }
+.badge.done { background: var(--ok); } .badge.failed { background: var(--bad); } .badge.skipped { background: var(--warn); }
+.eps { list-style: none; margin: 10px 0 0; padding: 0; font-size: 14px; }
+.eps li { display: grid; grid-template-columns: 18px 76px minmax(0, 1fr) auto auto minmax(0, 120px); gap: 10px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--line); }
+.eps li:first-child { border-top: 0; }
+.eps .mark { font-weight: 700; text-align: center; }
+.eps .ok .mark, .eps .ok .state { color: var(--ok); } .eps .warn .mark, .eps .warn .state { color: var(--warn); } .eps .pending .mark { color: var(--muted); }
+.eps .code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+.eps .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.eps .meta, .eps .state { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.eps .state { overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.history .warning { margin-top: 8px; font-size: 13px; color: var(--warn); }
+.row.end { justify-content: flex-end; margin-top: 8px; }
+@media (max-width: 640px) { .eps li { grid-template-columns: 18px 64px minmax(0, 1fr) auto; } .eps li .meta:nth-of-type(5), .eps .state { display: none; } }
 .outputs { margin: 8px 0 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); word-break: break-all; }
 dialog { background: var(--card); color: var(--fg); border: 1px solid var(--line); border-radius: 10px; width: min(900px, 92vw); max-height: 85vh; padding: 0; }
 dialog::backdrop { background: rgba(0,0,0,.45); }

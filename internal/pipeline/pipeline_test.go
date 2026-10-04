@@ -220,6 +220,7 @@ func (e *env) waitDone(t *testing.T) Job {
 		snap := e.m.Snapshot()
 		for _, j := range snap.Recent {
 			if j.Stage.Terminal() {
+				e.waitFinalized(t, j.ID)
 				return j
 			}
 		}
@@ -227,6 +228,27 @@ func (e *env) waitDone(t *testing.T) Job {
 	}
 	t.Fatalf("job did not finish: %+v", e.m.Snapshot())
 	return Job{}
+}
+
+// waitFinalized waits for a finished job's history record. The stage turns
+// terminal before finish() records the disc, the season progress and the
+// history and cleans the workspace; tests that check those must wait.
+func (e *env) waitFinalized(t *testing.T, id string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		h, _ := e.st.History(0)
+		for _, raw := range h {
+			var rec struct {
+				ID string `json:"id"`
+			}
+			if json.Unmarshal(raw, &rec) == nil && rec.ID == id {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("job %s never reached the history", id)
 }
 
 func (e *env) waitEject(t *testing.T, n int) {
@@ -601,6 +623,7 @@ func TestResumeAfterFailedRip(t *testing.T) {
 	if j.Stage != StageDone || len(j.Outputs) != 2 {
 		t.Fatalf("resumed job: stage=%s outputs=%+v err=%s", j.Stage, j.Outputs, j.Error)
 	}
+	e.waitFinalized(t, j.ID)
 	for _, o := range j.Outputs {
 		if strings.Contains(o.Path, "(2)") {
 			t.Fatalf("duplicate delivery: %s", o.Path)
