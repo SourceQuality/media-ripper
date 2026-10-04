@@ -130,7 +130,7 @@
         const what = b.dataset.folder;
         const url = `/api/jobs/${encodeURIComponent(id)}/disc-folder/${what === 'read' ? 'read' : 'nas'}`;
         b.disabled = true;
-        if (what === 'nas') b.textContent = 'Writing…';
+        if (what === 'nas') b.textContent = 'Writing… (can take a few minutes on a busy share)';
         fetch(url, { method: what === 'remove' ? 'DELETE' : 'POST' }).then(r => r.json()).then(res => {
           if (res.error) alert(res.error);
         }).finally(() => renderDetail(id));

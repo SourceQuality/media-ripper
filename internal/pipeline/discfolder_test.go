@@ -82,6 +82,13 @@ func TestDiscFolderKeptAndExported(t *testing.T) {
 	if st, _ := e.m.DiscFolderStatus(j.ID); st.NAS != root {
 		t.Fatalf("status NAS = %q", st.NAS)
 	}
+	if left, _ := filepath.Glob(filepath.Join(e.out, "_thediscdb", ".writing-*")); len(left) != 0 {
+		t.Fatalf("temporary folder left: %v", left)
+	}
+	// Written again over an existing copy.
+	if again, err := e.m.WriteDiscFolderNAS(j.ID); err != nil || again != root {
+		t.Fatalf("rewrite: %q %v", again, err)
+	}
 	if err := e.m.RemoveDiscFolderNAS(j.ID); err != nil {
 		t.Fatal(err)
 	}
