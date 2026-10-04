@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/discdb"
@@ -47,6 +49,9 @@ func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Di
 		return nil, ""
 	}
 	job.logf("thediscdb: %s, %s (%d of %d titles match)", match.Release, match.Disc.Name, match.Matched, match.Compared)
+	job.set(func(j *Job) {
+		j.Catalog = fmt.Sprintf("TheDiscDB (%s, %s)", releaseName(match.Release), match.Disc.Name)
+	})
 	entries := map[int]selector.CatalogEntry{}
 	for tid, t := range match.ByID {
 		e := selector.CatalogEntry{}
@@ -56,6 +61,26 @@ func (m *Manager) catalogEntries(ctx context.Context, job *Job, disc *makemkv.Di
 		entries[tid] = e
 	}
 	return entries, "TheDiscDB"
+}
+
+// releaseName turns a release folder slug into words:
+// "the-complete-series-blu-ray-2021" → "The Complete Series Blu-ray 2021".
+func releaseName(slug string) string {
+	words := strings.Split(slug, "-")
+	out := make([]string, 0, len(words))
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if strings.EqualFold(w, "blu") && i+1 < len(words) && strings.EqualFold(words[i+1], "ray") {
+			out = append(out, "Blu-ray")
+			i++
+			continue
+		}
+		if w != "" {
+			w = strings.ToUpper(w[:1]) + w[1:]
+		}
+		out = append(out, w)
+	}
+	return strings.Join(out, " ")
 }
 
 // adoptCatalogSeason trusts the catalogue's season over the label's when

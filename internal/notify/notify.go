@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -17,26 +18,47 @@ type Notifier struct {
 	WebhookURL string
 	NtfyURL    string
 	NtfyToken  string
+	Discord    *Discord
 	Client     *http.Client
 	Logger     *slog.Logger
 }
 
 // Event is what gets sent.
 type Event struct {
-	Type    string    `json:"type"` // started | done | failed | skipped
-	Drive   string    `json:"drive"`
-	Label   string    `json:"label,omitempty"`
-	Title   string    `json:"title,omitempty"`
-	Outputs []string  `json:"outputs,omitempty"`
-	Error   string    `json:"error,omitempty"`
-	Elapsed string    `json:"elapsed,omitempty"`
-	Time    time.Time `json:"time"`
+	Type  string `json:"type"` // started | ready | done | failed | skipped | test
+	Drive string `json:"drive"`
+	// DriveName is the drive model, e.g. "HL-DT-ST BD-RE BU40N".
+	DriveName string `json:"drive_name,omitempty"`
+	// Match says how the disc was identified, e.g. "TheDiscDB: …".
+	Match string `json:"match,omitempty"`
+	// Items are the titles being ripped, e.g. "S01E08 Time Enough at Last".
+	Items    []string  `json:"items,omitempty"`
+	Warnings []string  `json:"warnings,omitempty"`
+	Label    string    `json:"label,omitempty"`
+	Title    string    `json:"title,omitempty"`
+	Outputs  []string  `json:"outputs,omitempty"`
+	Error    string    `json:"error,omitempty"`
+	Elapsed  string    `json:"elapsed,omitempty"`
+	Time     time.Time `json:"time"`
 }
 
 // Send delivers the event; failures are logged, never fatal.
 func (n *Notifier) Send(ctx context.Context, ev Event) {
-	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "") {
-		return
+	_ = n.send(ctx, ev)
+}
+
+// Test sends a test event and reports the first failure, for the
+// settings page.
+func (n *Notifier) Test(ctx context.Context) error {
+	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "" && !n.Discord.enabled()) {
+		return errors.New("no notification target is configured")
+	}
+	return n.send(ctx, Event{Type: "test", Title: "Test"})
+}
+
+func (n *Notifier) send(ctx context.Context, ev Event) error {
+	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "" && !n.Discord.enabled()) {
+		return nil
 	}
 	if ev.Time.IsZero() {
 		ev.Time = time.Now()
@@ -47,13 +69,24 @@ func (n *Notifier) Send(ctx context.Context, ev Event) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	var errs []error
+	report := func(target string, err error) {
+		if err == nil {
+			return
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", target, err))
+		if n.Logger != nil {
+			n.Logger.Warn("notify failed", "target", target, "err", err)
+		}
+	}
 	if n.WebhookURL != "" {
 		body, _ := json.Marshal(ev)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.WebhookURL, bytes.NewReader(body))
 		if err == nil {
 			req.Header.Set("Content-Type", "application/json")
-			n.do(client, req, "webhook")
+			err = n.do(client, req)
 		}
+		report("webhook", err)
 	}
 	if n.NtfyURL != "" {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, n.NtfyURL, strings.NewReader(ntfyBody(ev)))
@@ -66,23 +99,26 @@ func (n *Notifier) Send(ctx context.Context, ev Event) {
 			if n.NtfyToken != "" {
 				req.Header.Set("Authorization", "Bearer "+n.NtfyToken)
 			}
-			n.do(client, req, "ntfy")
+			err = n.do(client, req)
 		}
+		report("ntfy", err)
 	}
+	if n.Discord.enabled() {
+		report("discord", n.Discord.send(ctx, client, ev))
+	}
+	return errors.Join(errs...)
 }
 
-func (n *Notifier) do(client *http.Client, req *http.Request, what string) {
+func (n *Notifier) do(client *http.Client, req *http.Request) error {
 	resp, err := client.Do(req)
 	if err != nil {
-		if n.Logger != nil {
-			n.Logger.Warn("notify failed", "target", what, "err", err)
-		}
-		return
+		return err
 	}
 	resp.Body.Close()
-	if resp.StatusCode >= 300 && n.Logger != nil {
-		n.Logger.Warn("notify rejected", "target", what, "status", resp.StatusCode)
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("rejected: %s", resp.Status)
 	}
+	return nil
 }
 
 func ntfyTitle(ev Event) string {
@@ -99,6 +135,10 @@ func ntfyTitle(ev Event) string {
 		return "Ripping: " + name
 	case "skipped":
 		return "Skipped: " + name
+	case "ready":
+		return "Ready for the next disc"
+	case "test":
+		return "media-ripper test"
 	}
 	return name
 }

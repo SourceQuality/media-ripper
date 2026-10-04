@@ -215,10 +215,23 @@ type Web struct {
 
 // Notify configures completion/failure notifications.
 type Notify struct {
-	WebhookURL string `yaml:"webhook_url" json:"webhook_url"`
-	NtfyURL    string `yaml:"ntfy_url" json:"ntfy_url"`
-	NtfyToken  string `yaml:"ntfy_token" json:"ntfy_token"`
+	WebhookURL string  `yaml:"webhook_url" json:"webhook_url"`
+	NtfyURL    string  `yaml:"ntfy_url" json:"ntfy_url"`
+	NtfyToken  string  `yaml:"ntfy_token" json:"ntfy_token"`
+	Discord    Discord `yaml:"discord" json:"discord"`
 }
+
+// Discord posts to a channel as a bot (token + channel id) or through a
+// channel webhook. ApplicationID builds the invite link for the bot.
+type Discord struct {
+	ApplicationID string `yaml:"application_id" json:"application_id"`
+	BotToken      string `yaml:"bot_token" json:"bot_token"`
+	ChannelID     string `yaml:"channel_id" json:"channel_id"`
+	WebhookURL    string `yaml:"webhook_url" json:"webhook_url"`
+}
+
+// DefaultDiscordApp is the media-ripper Discord application.
+const DefaultDiscordApp = "1556123331047202997"
 
 // Log configures logging.
 type Log struct {
@@ -251,6 +264,7 @@ func Default() Config {
 			Retries:       1,
 			WriteSettings: true,
 		},
+		Notify: Notify{Discord: Discord{ApplicationID: DefaultDiscordApp}},
 		Metadata: Metadata{
 			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data"},
 			Provider:  "auto",
@@ -391,6 +405,12 @@ func (c *Config) KeepEnvOverrides(prev *Config) {
 			c.Notify.NtfyToken = prev.Notify.NtfyToken
 		case "notify.webhook_url":
 			c.Notify.WebhookURL = prev.Notify.WebhookURL
+		case "notify.discord.bot_token":
+			c.Notify.Discord.BotToken = prev.Notify.Discord.BotToken
+		case "notify.discord.channel_id":
+			c.Notify.Discord.ChannelID = prev.Notify.Discord.ChannelID
+		case "notify.discord.webhook_url":
+			c.Notify.Discord.WebhookURL = prev.Notify.Discord.WebhookURL
 		case "arr.radarr.api_key":
 			c.Arr.Radarr.APIKey = prev.Arr.Radarr.APIKey
 		case "arr.sonarr.api_key":
@@ -439,6 +459,9 @@ func applyEnv(cfg *Config) {
 	set("MR_NTFY_URL", "notify.ntfy_url", &cfg.Notify.NtfyURL)
 	set("MR_NTFY_TOKEN", "notify.ntfy_token", &cfg.Notify.NtfyToken)
 	set("MR_WEBHOOK_URL", "notify.webhook_url", &cfg.Notify.WebhookURL)
+	set("MR_DISCORD_BOT_TOKEN", "notify.discord.bot_token", &cfg.Notify.Discord.BotToken)
+	set("MR_DISCORD_CHANNEL_ID", "notify.discord.channel_id", &cfg.Notify.Discord.ChannelID)
+	set("MR_DISCORD_WEBHOOK_URL", "notify.discord.webhook_url", &cfg.Notify.Discord.WebhookURL)
 	set("MR_RADARR_API_KEY", "arr.radarr.api_key", &cfg.Arr.Radarr.APIKey)
 	set("MR_SONARR_API_KEY", "arr.sonarr.api_key", &cfg.Arr.Sonarr.APIKey)
 	if v := os.Getenv("MR_DRIVES"); v != "" {
@@ -533,7 +556,7 @@ func (c *Config) RipDir() string { return filepath.Join(c.Workspace, "rips") }
 func (c *Config) StateDir() string { return filepath.Join(c.Workspace, "state") }
 
 // SecretKeys are the dotted keys whose values never leave the server.
-var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "arr.radarr.api_key", "arr.sonarr.api_key"}
+var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "arr.radarr.api_key", "arr.sonarr.api_key"}
 
 func (c *Config) secret(key string) *string {
 	switch key {
@@ -543,6 +566,10 @@ func (c *Config) secret(key string) *string {
 		return &c.Metadata.TMDBAPIKey
 	case "notify.ntfy_token":
 		return &c.Notify.NtfyToken
+	case "notify.discord.bot_token":
+		return &c.Notify.Discord.BotToken
+	case "notify.discord.webhook_url":
+		return &c.Notify.Discord.WebhookURL
 	case "arr.radarr.api_key":
 		return &c.Arr.Radarr.APIKey
 	case "arr.sonarr.api_key":

@@ -115,11 +115,25 @@
       { key: 'notify.ntfy_token', label: 'ntfy token', type: 'secret' },
       { key: 'notify.webhook_url', label: 'Webhook URL', type: 'text', wide: true },
     ]},
+    { title: 'Discord', fields: [
+      { key: 'notify.discord.application_id', label: 'Bot application ID', type: 'text', hint: 'The media-ripper bot by default; use your own application to post as your own bot' },
+      { key: 'discord.invite', label: 'Invite the bot', type: 'invite', hint: 'Adds the bot to a server with View Channel, Send Messages and Embed Links only' },
+      { key: 'notify.discord.bot_token', label: 'Bot token', type: 'secret', hint: 'From the application\'s Bot page in the Discord developer portal' },
+      { key: 'notify.discord.channel_id', label: 'Channel ID', type: 'text', hint: 'Developer mode on, then right-click the channel → Copy Channel ID' },
+      { key: 'notify.discord.webhook_url', label: 'Or: channel webhook URL', type: 'secret', wide: true, hint: 'Channel settings → Integrations → Webhooks. Used when no bot token and channel are set' },
+      { key: 'discord.test', label: 'Check it', type: 'action', action: 'test-notify', text: 'Send test message', hint: 'Uses the saved settings: save first' },
+    ]},
     { title: 'Logging', fields: [
       { key: 'log.level', label: 'Level', type: 'select', options: ['debug', 'info', 'warn', 'error'] },
       { key: 'log.format', label: 'Format', type: 'select', options: ['text', 'json'] },
     ]},
   ];
+
+  // Same link as notify.DiscordInviteURL: bot scope, View Channel +
+  // Send Messages + Embed Links (19456).
+  const DEFAULT_DISCORD_APP = '1556123331047202997';
+  const inviteURL = appID => `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent((appID || '').trim() || DEFAULT_DISCORD_APP)}&scope=bot&permissions=19456`;
+  const NON_DATA = new Set(['invite', 'action']);
 
   const get = (obj, key) => key.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const set = (obj, key, val) => { const ks = key.split('.'); let o = obj; for (const k of ks.slice(0, -1)) { o[k] = o[k] || {}; o = o[k]; } o[ks.at(-1)] = val; };
@@ -136,6 +150,8 @@
       case 'lines': return `<textarea id="${id(f.key)}" rows="${Math.max(2, (value || []).length + 1)}"${dis}>${(value || []).join('\n')}</textarea>`;
       case 'map': { const lines = Object.entries(value || {}).map(([k, v]) => `${k} = ${v}`); return `<textarea id="${id(f.key)}" rows="${Math.max(2, lines.length + 1)}"${dis}>${lines.join('\n')}</textarea>`; }
       case 'secret': { const isSet = state.secrets[f.key]; return `<span class="secret"><input type="password" id="${id(f.key)}" placeholder="${isSet ? '••••••••' : ''}"${dis}>${isSet && !locked ? `<button type="button" class="clear" data-key="${f.key}">Clear</button>` : ''}</span>`; }
+      case 'invite': return `<a class="btn" id="${id(f.key)}" href="${inviteURL(get(state.config, 'notify.discord.application_id'))}" target="_blank" rel="noopener">Add to Discord</a>`;
+      case 'action': return `<span class="row"><button type="button" id="${id(f.key)}" data-action="${f.action}">${f.text}</button><span class="hint" id="${id(f.key)}-status"></span></span>`;
       case 'number': return `<input type="number" step="1" id="${id(f.key)}" value="${value ?? ''}"${dis}>`;
       case 'float': return `<input type="number" step="0.01" min="0" max="1" id="${id(f.key)}" value="${value ?? ''}"${dis}>`;
       default: return `<input type="text" id="${id(f.key)}" value="${String(value ?? '').replace(/"/g, '&quot;')}"${dis}>`;
@@ -153,6 +169,18 @@
         ${f.hint ? `<span class="hint">${f.hint}</span>` : ''}
       </label>`;
     }).join('')}</div></section>`).join('');
+    const appInput = document.getElementById(id('notify.discord.application_id'));
+    const invite = document.getElementById(id('discord.invite'));
+    if (appInput && invite) appInput.oninput = () => { invite.href = inviteURL(appInput.value); };
+    document.querySelectorAll('button[data-action="test-notify"]').forEach(b => b.onclick = () => {
+      const out = document.getElementById(b.id + '-status');
+      b.disabled = true; out.textContent = 'Sending…';
+      fetch('/api/notify/test', { method: 'POST' })
+        .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); })
+        .then(() => { out.textContent = 'Sent'; })
+        .catch(e => { out.textContent = e.message; })
+        .finally(() => { b.disabled = false; });
+    });
     document.querySelectorAll('button.clear').forEach(b => b.onclick = () => {
       clearSecrets.add(b.dataset.key);
       b.previousElementSibling.placeholder = '';
@@ -166,7 +194,7 @@
     const out = JSON.parse(JSON.stringify(state.config));
     const env = new Set(state.env);
     for (const sec of SCHEMA) for (const f of sec.fields) {
-      if (env.has(f.key)) continue;
+      if (env.has(f.key) || NON_DATA.has(f.type)) continue;
       const el = document.getElementById(id(f.key));
       let v;
       switch (f.type) {
