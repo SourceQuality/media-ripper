@@ -471,14 +471,16 @@ func (r *runner) status() DriveStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	s := DriveStatus{Path: r.path, Model: r.model, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored}
+	// The job first, then the tray: a job marks itself ejected only after
+	// the eject, so the two never disagree.
+	if r.job != nil {
+		j := r.job.Snapshot()
+		s.Job = &j
+	}
 	if r.job != nil && r.drv != nil {
 		if st, err := r.drv.Status(); err == nil {
 			s.Status = st.String()
 		}
-	}
-	if r.job != nil {
-		j := r.job.Snapshot()
-		s.Job = &j
 	}
 	return s
 }

@@ -84,6 +84,7 @@ for a in "$@"; do
     info|mkv|backup) cmd=$a ;;
   esac
 done
+[ -n "$FAKE_ARGS" ] && echo "$*" >> "$FAKE_ARGS"
 if [ "$cmd" = info ]; then
   cat "$FAKE_INFO"
   exit 0

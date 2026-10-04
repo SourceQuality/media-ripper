@@ -52,6 +52,8 @@ func matrixEnv(t *testing.T) *env {
 func TestDiscFolderKeptAndExported(t *testing.T) {
 	e := matrixEnv(t)
 	reads := fakeDisc(e)
+	argsLog := filepath.Join(t.TempDir(), "args")
+	t.Setenv("FAKE_ARGS", argsLog)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go e.m.Run(ctx)
@@ -61,8 +63,15 @@ func TestDiscFolderKeptAndExported(t *testing.T) {
 		t.Fatalf("disc read %d times for its folder", *reads)
 	}
 	st, err := e.m.DiscFolderStatus(j.ID)
-	if err != nil || !st.Kept || st.Files != 5 || st.Name != "THE_MATRIX" {
+	if err != nil || !st.Kept || !st.Log || st.Files != 5 || st.Name != "THE_MATRIX" {
 		t.Fatalf("status = %+v, %v", st, err)
+	}
+	// The MakeMKV log is TheDiscDB's own command: every title, as printed.
+	if log, err := e.m.ScanLog(j.ID); err != nil || string(log) != movieInfo && string(log) != movieInfo+"\n" {
+		t.Fatalf("log = %q, %v", log, err)
+	}
+	if args, _ := os.ReadFile(argsLog); !strings.Contains(string(args), "--minlength=0 --robot info dev:/dev/fake0") {
+		t.Fatalf("makemkvcon runs:\n%s", args)
 	}
 
 	// On the share: real small files, the stream as a hole of its size.
@@ -150,8 +159,8 @@ func TestDiscFolderReadOnReinsert(t *testing.T) {
 	if *reads != 0 {
 		t.Fatal("folder read with disc_folder off")
 	}
-	if st, _ := e.m.DiscFolderStatus(j.ID); st.Kept {
-		t.Fatal("folder kept with disc_folder off")
+	if st, _ := e.m.DiscFolderStatus(j.ID); st.Kept || st.Log {
+		t.Fatal("folder or log kept with disc_folder off")
 	}
 	if err := e.m.RequestDiscFolder(j.ID); err != nil {
 		t.Fatal(err)
@@ -161,7 +170,7 @@ func TestDiscFolderReadOnReinsert(t *testing.T) {
 	}
 	e.drv.insert("fp-matrix", "THE_MATRIX")
 	e.waitEject(t, 2)
-	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Kept || st.Waiting {
+	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Kept || !st.Log || st.Waiting {
 		t.Fatalf("after reinsert: %+v", st)
 	}
 	if n := len(e.m.Snapshot().Recent); n != 1 {

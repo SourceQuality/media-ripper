@@ -77,6 +77,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
 	mux.HandleFunc("DELETE /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
 	mux.HandleFunc("GET /api/jobs/{id}/disc-folder.zip", s.discFolderZip)
+	mux.HandleFunc("GET /api/jobs/{id}/makemkv-log", s.makemkvLog)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
 	mux.HandleFunc("POST /api/auth/setup", s.authSetup)
@@ -440,6 +441,25 @@ func (s *Server) discFolderNAS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"path": p})
+}
+
+// makemkvLog is the disc's MakeMKV scan log, for TheDiscDB.
+func (s *Server) makemkvLog(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	b, err := s.Manager.ScanLog(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if r.URL.Query().Get("download") != "" {
+		name := "makemkv-log"
+		if st, err := s.Manager.DiscFolderStatus(id); err == nil && st.Name != "" {
+			name = st.Name + " makemkv-log"
+		}
+		w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(name, `"`, "_")+`.txt"`)
+	}
+	_, _ = w.Write(b)
 }
 
 // discFolderZip streams the folder as a zip.

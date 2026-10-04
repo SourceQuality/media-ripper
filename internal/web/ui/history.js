@@ -63,25 +63,36 @@
   // The folder thediscdb.com's "Add a disc" asks for, rebuilt from what
   // was kept after the rip: on the NAS share, or as a zip.
   const fmtSize = n => n >= 1e9 ? (n / 1e9).toFixed(1) + ' GB' : Math.max(1, Math.round(n / 1e6)) + ' MB';
+  // TheDiscDB's log step asks for this command to be piped to its URL;
+  // the address is all that is needed: the browser sends the kept log.
+  const logURL = text => (String(text).match(/https:\/\/thediscdb\.com\/api\/contribute\/[A-Za-z0-9_-]+\/discs\/[A-Za-z0-9_-]+\/logs/) || [])[0];
   const folderCard = (id, f) => {
     if (!f) return '';
-    let body;
+    const parts = [];
     if (f.kept) {
-      body = `<div class="row actions-row">
+      parts.push(`<h3>1. The disc folder</h3>
+        <p class="small">On thediscdb.com, <em>Contribute → Add Disc</em> asks you to <em>Select Disc Root Folder</em>: pick the <code>${esc(f.name)}</code> folder (the one holding <code>BDMV</code>).</p>
+        <div class="row actions-row">
           ${f.nas ? `<span>On the NAS: <code>${esc(f.nas)}</code></span><button data-folder="remove">Remove from NAS</button>`
             : '<button class="primary" data-folder="nas">Put the folder on the NAS</button>'}
           <a class="btn" href="/api/jobs/${encodeURIComponent(id)}/disc-folder.zip" download>Download zip</a>
         </div>
-        <p class="muted small">The NAS copy takes almost no space. The zip downloads as roughly ${esc(fmtSize(f.bytes * 0.0013))} (about two minutes to download for a 75 GB disc), but its video files are placeholders that unzip to ${esc(fmtSize(f.bytes))} of zeros: delete the folder once the disc is added.</p>`;
-    } else if (f.waiting) {
-      body = '<p><strong>Put the disc in the drive now.</strong> It is read (a few seconds, no rip) and ejected.</p>';
-    } else {
-      body = `<div class="row actions-row"><button data-folder="read">Read from disc</button></div>
-        <p class="muted small">The disc's small files were not kept${f.files ? '' : ' (ripped before this was added)'}. Click, then put the disc in: it is read and ejected, not ripped again.</p>`;
+        <p class="muted small">The NAS copy takes almost no space. The zip downloads as roughly ${esc(fmtSize(f.bytes * 0.0013))} (about two minutes to download for a 75 GB disc), but its video files are placeholders that unzip to ${esc(fmtSize(f.bytes))} of zeros: delete the folder once the disc is added.</p>`);
     }
-    return `<div class="card"><h2>Add this disc to TheDiscDB</h2>
-      <p class="small">On thediscdb.com, <em>Contribute → Add Disc</em> asks you to <em>Select Disc Root Folder</em>: pick the <code>${esc(f.name)}</code> folder (the one holding <code>BDMV</code>). Then, on the disc's page, upload the disc manifest under <em>Advanced</em>.</p>
-      ${body}</div>`;
+    if (f.log) {
+      parts.push(`<h3>2. The MakeMKV log</h3>
+        <p class="small">When thediscdb.com shows a <code>makemkvcon … | curl … /logs</code> command, paste it (or just its address) here: your browser sends the log media-ripper kept.</p>
+        <div class="row actions-row"><input id="log-url" type="text" placeholder="https://thediscdb.com/api/contribute/…/discs/…/logs" autocomplete="off">
+          <button class="primary" data-log="send">Send to TheDiscDB</button>
+          <a class="btn" href="/api/jobs/${encodeURIComponent(id)}/makemkv-log?download=1" download>Download log</a></div>
+        <p class="small" id="log-status"></p>`);
+    }
+    if (!f.kept || !f.log) {
+      parts.push(f.waiting ? '<p><strong>Put the disc in the drive now.</strong> It is read (under a minute, no rip) and ejected.</p>'
+        : `<div class="row actions-row"><button data-folder="read">Read from disc</button></div>
+          <p class="muted small">${f.kept ? "The MakeMKV log" : "The disc's small files and MakeMKV log"} were not kept for this disc. Click, then put the disc in: it is read and ejected, not ripped again.</p>`);
+    }
+    return `<div class="card"><h2>Add this disc to TheDiscDB</h2>${parts.join('')}</div>`;
   };
 
   let refresh;
@@ -135,6 +146,19 @@
           if (res.error) alert(res.error);
         }).finally(() => renderDetail(id));
       });
+      const send = view.querySelector('button[data-log="send"]');
+      if (send) send.onclick = () => {
+        const out = $('#log-status'), url = logURL($('#log-url').value);
+        if (!url) { out.textContent = 'Paste the command or address thediscdb.com shows (https://thediscdb.com/api/contribute/…/logs).'; return; }
+        send.disabled = true; out.textContent = 'Sending…';
+        fetch(`/api/jobs/${encodeURIComponent(id)}/makemkv-log`).then(r => { if (!r.ok) throw new Error('the log is not available'); return r.text(); })
+          // TheDiscDB does not let other sites read its answer, so the
+          // request is sent blind; its page moves on when the log arrives.
+          .then(log => fetch(url, { method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' }, body: log }))
+          .then(() => { out.textContent = 'Sent. thediscdb.com should move to the next step within a few seconds.'; })
+          .catch(e => { out.textContent = 'Could not send: ' + e.message + '. Use Download log and the site\'s manual upload instead.'; })
+          .finally(() => { send.disabled = false; });
+      };
       // A disc still being ripped, or awaited for its folder: keep it current.
       if (!terminal(j.stage) || (folder && folder.waiting)) refresh = setTimeout(() => { if (decodeURIComponent(location.hash.slice(1)) === id) renderDetail(id); }, 5000);
     });
