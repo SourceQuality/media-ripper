@@ -9,11 +9,25 @@
     cancel: id => post(`/api/jobs/${encodeURIComponent(id)}/cancel`),
     detail: id => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => {
       $('#detail-title').textContent = jobTitle(j);
-      $('#detail-log').textContent = (j.log || []).map(l => `${new Date(l.time).toLocaleTimeString()}  ${l.message}`).join('\n') || '—';
+      $('#detail-log').textContent = (j.log || []).length
+        ? j.log.map(l => `${new Date(l.time).toLocaleTimeString()}  ${l.message}`).join('\n')
+        : summary(j);
       $('#detail').showModal();
     }),
   };
   $('#detail-close').onclick = () => $('#detail').close();
+
+  // From the saved history (a job from before a restart): the outcome
+  // without the step-by-step log.
+  const summary = j => {
+    const lines = [`${j.stage}${j.elapsed ? ' after ' + j.elapsed : ''} · started ${new Date(j.started_at).toLocaleString()}`];
+    if (j.error) lines.push('', 'Error: ' + j.error);
+    const picks = (j.selection && j.selection.picks) || [];
+    if (picks.length) lines.push('', 'Titles:', ...picks.map(p => `  t${String(p.title.id).padStart(2, '0')} ${p.episode ? `S${String(p.season).padStart(2, '0')}E${String(p.episode).padStart(2, '0')} ${p.episode_title || ''}` : ''}  (${p.reason})`));
+    if ((j.outputs || []).length) lines.push('', 'Files:', ...j.outputs.map(o => '  ' + o.path));
+    lines.push('', 'The detailed log is not kept after a restart.');
+    return lines.join('\n');
+  };
 
   const jobTitle = j => {
     const id = j.identity;
@@ -73,11 +87,10 @@
   let models = {};
   const driveName = p => models[p] || p;
 
-  const render = s => {
-    $('#version').textContent = s.version || '';
-    models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
-    $('#drives').innerHTML = s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>';
-    const rows = (s.recent || []).filter(j => terminal(j.stage)).map(j => `<tr>
+  // Finished jobs come from the saved history so they survive restarts.
+  let history = [];
+  const renderRecent = () => {
+    const rows = history.filter(j => terminal(j.stage)).map(j => `<tr>
       <td>${esc(fmtWhen(j.finished_at || j.started_at))}</td><td class="drive" title="${esc(j.drive)}">${esc(driveName(j.drive))}</td>
       <td>${esc(jobTitle(j))}${j.outputs && j.outputs.length ? `<ul class="outputs">${j.outputs.map(o => `<li>${esc(o.path)}</li>`).join('')}</ul>` : ''}${j.error ? `<div class="stage failed">${esc(j.error)}</div>` : ''}</td>
       <td class="stage ${esc(j.stage)}">${esc(j.stage)}</td><td>${esc(j.elapsed || '')}</td>
@@ -85,8 +98,19 @@
     $('#recent tbody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="empty">Nothing yet</td></tr>';
   };
 
+  const render = s => {
+    $('#version').textContent = s.version || '';
+    models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
+    $('#drives').innerHTML = s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>';
+    renderRecent();
+  };
+
   let timer;
-  const refresh = () => fetch('/api/status').then(r => r.json()).then(render).catch(() => {}).finally(() => { clearTimeout(timer); timer = setTimeout(refresh, document.hidden ? 10000 : 2000); });
+  const refresh = () => Promise.all([
+    fetch('/api/status').then(r => r.json()),
+    fetch('/api/history?limit=25').then(r => r.json()).catch(() => history),
+  ]).then(([s, h]) => { history = Array.isArray(h) ? h : []; render(s); }).catch(() => {})
+    .finally(() => { clearTimeout(timer); timer = setTimeout(refresh, document.hidden ? 10000 : 2000); });
   document.addEventListener('visibilitychange', refresh);
   refresh();
 })();

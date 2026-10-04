@@ -168,3 +168,28 @@ func TestDiscordSettingsAndTest(t *testing.T) {
 		t.Fatalf("test: %d %s (posts %d)", resp.StatusCode, out, posts)
 	}
 }
+
+// After a restart a job is only in the saved history; its detail still
+// loads from there.
+func TestJobFromHistoryAfterRestart(t *testing.T) {
+	cfg := config.Default()
+	cfg.Output.Path = t.TempDir()
+	st, _ := store.Open(t.TempDir())
+	if err := st.AppendHistory(map[string]any{"id": "20261003-203139-343", "label": "TWILIGHT_ZONE_SEASON1_DISC1", "stage": "done"}); err != nil {
+		t.Fatal(err)
+	}
+	m := pipeline.New(pipeline.Deps{Config: &cfg, Store: st})
+	srv := httptest.NewServer((&Server{Manager: m, Store: st, Version: "test"}).Handler())
+	defer srv.Close()
+	resp, _ := http.Get(srv.URL + "/api/jobs/20261003-203139-343")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "TWILIGHT_ZONE_SEASON1_DISC1") {
+		t.Fatalf("history job: %d %s", resp.StatusCode, body)
+	}
+	resp, _ = http.Get(srv.URL + "/api/jobs/nope")
+	resp.Body.Close()
+	if resp.StatusCode != 404 {
+		t.Fatalf("unknown job: %d", resp.StatusCode)
+	}
+}
