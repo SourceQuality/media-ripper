@@ -94,6 +94,8 @@ type Manager struct {
 	// folderWanted maps a disc fingerprint to the job whose TheDiscDB
 	// folder should be read when that disc goes in.
 	folderWanted map[string]folderRequest
+	// running counts Run calls still winding down.
+	running sync.WaitGroup
 }
 
 // New builds a manager. Drives are opened lazily by Run.
@@ -200,6 +202,8 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 
 // Run blocks until ctx is cancelled, watching every configured drive.
 func (m *Manager) Run(ctx context.Context) error {
+	m.running.Add(1)
+	defer m.running.Done()
 	cfg := m.Config()
 	paths := cfg.Drives
 	if len(paths) == 0 {

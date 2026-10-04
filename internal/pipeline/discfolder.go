@@ -270,6 +270,22 @@ func (m *Manager) folderFiles(id string) (Job, []store.FileEntry, func(p string)
 	}
 	files := append([]store.FileEntry(nil), inv.Files...)
 	sort.Slice(files, func(a, b int) bool { return files[a].Path < files[b].Path })
+	// Discs carry odd dates (a dummy file from 1754 on The Thing) that
+	// thediscdb.com cannot read; those get the disc's own latest date.
+	latest := time.Time{}
+	for _, f := range files {
+		if plausibleDate(f.Modified) && f.Modified.After(latest) {
+			latest = f.Modified
+		}
+	}
+	if latest.IsZero() {
+		latest = j.StartedAt
+	}
+	for i := range files {
+		if !plausibleDate(files[i].Modified) {
+			files[i].Modified = latest
+		}
+	}
 	kept := func(p string) string {
 		if src, ok := safeJoin(dir, p); ok {
 			if st, err := os.Stat(src); err == nil && st.Mode().IsRegular() {
@@ -322,9 +338,7 @@ func (m *Manager) WriteDiscFolderNAS(id string) (string, error) {
 				return "", err
 			}
 		}
-		if !f.Modified.IsZero() {
-			_ = os.Chtimes(dst, f.Modified, f.Modified)
-		}
+		_ = os.Chtimes(dst, f.Modified, f.Modified)
 	}
 	_ = os.RemoveAll(final)
 	if err := os.Rename(root, final); err != nil {
@@ -360,9 +374,6 @@ func (m *Manager) WriteDiscFolderZip(w io.Writer, id string) error {
 			continue
 		}
 		hdr := &zip.FileHeader{Name: root + "/" + f.Path, Method: zip.Deflate, Modified: f.Modified}
-		if f.Modified.IsZero() {
-			hdr.Modified = j.StartedAt
-		}
 		fw, err := zw.CreateHeader(hdr)
 		if err != nil {
 			return err
@@ -388,6 +399,12 @@ func (m *Manager) WriteDiscFolderZip(w io.Writer, id string) error {
 		}
 	}
 	return zw.Close()
+}
+
+// plausibleDate reports whether a file date can be passed on: from 1980
+// (the zip format's start) to a day from now.
+func plausibleDate(t time.Time) bool {
+	return t.Year() >= 1980 && t.Before(time.Now().Add(24*time.Hour))
 }
 
 // safeJoin joins a disc path under root, refusing anything that could
