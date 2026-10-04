@@ -15,7 +15,7 @@ func TestSelfSigned(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
 	names := []string{"localhost", "127.0.0.1", "ripper", "ripper.example.ts.net", "100.64.0.10"}
-	c1, err := SelfSigned(dir, names, now)
+	c1, err := SelfSigned(dir, names, names, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,16 +29,23 @@ func TestSelfSigned(t *testing.T) {
 		t.Fatalf("lifetime %v exceeds what Apple accepts", leaf.NotAfter.Sub(now))
 	}
 	// Reused while valid and covering.
-	c2, _ := SelfSigned(dir, names, now.Add(time.Hour))
+	c2, _ := SelfSigned(dir, names, names, now.Add(time.Hour))
 	if Fingerprint(c2) != Fingerprint(c1) {
 		t.Fatal("certificate remade without reason")
 	}
-	// Remade for a new name, and when about to expire.
-	c3, _ := SelfSigned(dir, append(names, "ripper.example"), now)
+	// A new address of the machine (a container bridge) is not a reason.
+	if c, _ := SelfSigned(dir, append(names, "172.17.0.1"), names, now); Fingerprint(c) != Fingerprint(c1) {
+		t.Fatal("remade for an optional address")
+	}
+	// Remade for a new required name, and when about to expire.
+	c3, _ := SelfSigned(dir, names, append(names, "ripper.example"), now)
 	if Fingerprint(c3) == Fingerprint(c1) {
 		t.Fatal("new name not covered")
 	}
-	c4, _ := SelfSigned(dir, names, now.Add(Lifetime-Renew+time.Hour))
+	if leaf, _ := x509.ParseCertificate(c3.Certificate[0]); leaf.VerifyHostname("100.64.0.10") != nil {
+		t.Fatal("a remade certificate must still cover the addresses")
+	}
+	c4, _ := SelfSigned(dir, names, names, now.Add(Lifetime-Renew+time.Hour))
 	if Fingerprint(c4) == Fingerprint(c3) {
 		t.Fatal("not renewed before expiry")
 	}
@@ -49,7 +56,7 @@ func TestSelfSigned(t *testing.T) {
 
 // One port: TLS works, plain HTTP is redirected to https.
 func TestSplitServesBoth(t *testing.T) {
-	cert, err := SelfSigned(t.TempDir(), []string{"localhost", "127.0.0.1"}, time.Now())
+	cert, err := SelfSigned(t.TempDir(), []string{"localhost", "127.0.0.1"}, nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

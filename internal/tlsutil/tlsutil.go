@@ -32,13 +32,12 @@ const (
 	Renew    = 30 * 24 * time.Hour
 )
 
-// Names lists what the certificate should cover: the host name (and its
-// .local form), localhost, every address of this machine, and extra.
+// Names lists what the certificate should cover: the Required names and
+// every current address of this machine.
 func Names(extra []string) []string {
-	set := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
-	if h, err := os.Hostname(); err == nil && h != "" {
-		set[strings.ToLower(h)] = true
-		set[strings.ToLower(h)+".local"] = true
+	set := map[string]bool{}
+	for _, n := range Required(extra) {
+		set[n] = true
 	}
 	if addrs, err := net.InterfaceAddrs(); err == nil {
 		for _, a := range addrs {
@@ -47,11 +46,28 @@ func Names(extra []string) []string {
 			}
 		}
 	}
+	return sorted(set)
+}
+
+// Required lists the names a kept certificate must cover to be reused:
+// the host name (and its .local form), localhost and extra. Addresses
+// come and go (a VPN, a container bridge) and are not required, so they
+// do not force a new certificate, and a new browser warning, each time.
+func Required(extra []string) []string {
+	set := map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		set[strings.ToLower(h)] = true
+		set[strings.ToLower(h)+".local"] = true
+	}
 	for _, e := range extra {
 		if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
 			set[e] = true
 		}
 	}
+	return sorted(set)
+}
+
+func sorted(set map[string]bool) []string {
 	out := make([]string, 0, len(set))
 	for n := range set {
 		out = append(out, n)
@@ -60,14 +76,19 @@ func Names(extra []string) []string {
 	return out
 }
 
-// SelfSigned returns a certificate for names kept in dir (cert.pem and
-// key.pem), making a new one when there is none, it expires within Renew,
-// or it does not cover every name.
-func SelfSigned(dir string, names []string, now time.Time) (tls.Certificate, error) {
+// SelfSigned returns a certificate kept in dir (cert.pem and key.pem),
+// reused while it covers every required name and is not about to expire;
+// a new one covers names and required.
+func SelfSigned(dir string, names, required []string, now time.Time) (tls.Certificate, error) {
 	certFile, keyFile := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
-	if c, err := tls.LoadX509KeyPair(certFile, keyFile); err == nil && covers(c, names, now) {
+	if c, err := tls.LoadX509KeyPair(certFile, keyFile); err == nil && covers(c, required, now) {
 		return c, nil
 	}
+	set := map[string]bool{}
+	for _, n := range append(append([]string(nil), names...), required...) {
+		set[n] = true
+	}
+	names = sorted(set)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return tls.Certificate{}, err
 	}

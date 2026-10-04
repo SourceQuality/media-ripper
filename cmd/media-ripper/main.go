@@ -451,5 +451,5 @@ func webCertificate(cfg *config.Config) (tls.Certificate, error) {
 	if cfg.Web.TLS == "files" {
 		return tlsutil.Load(cfg.Web.TLSCert, cfg.Web.TLSKey)
 	}
-	return tlsutil.SelfSigned(filepath.Join(cfg.StateDir(), "tls"), tlsutil.Names(cfg.Web.TLSHosts), time.Now())
+	return tlsutil.SelfSigned(filepath.Join(cfg.StateDir(), "tls"), tlsutil.Names(cfg.Web.TLSHosts), tlsutil.Required(cfg.Web.TLSHosts), time.Now())
 }
