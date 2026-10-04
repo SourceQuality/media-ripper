@@ -252,6 +252,14 @@ type Eject struct {
 type Web struct {
 	Listen  string `yaml:"listen" json:"listen"`
 	Enabled bool   `yaml:"enabled" json:"enabled"`
+	// TLS: auto (a certificate made on this machine), files (TLSCert and
+	// TLSKey) or off. Plain HTTP on the same port is redirected to https.
+	TLS     string `yaml:"tls" json:"tls"`
+	TLSCert string `yaml:"tls_cert" json:"tls_cert"`
+	TLSKey  string `yaml:"tls_key" json:"tls_key"`
+	// TLSHosts are extra names for the auto certificate, e.g. a Tailscale
+	// or DNS name; the host name and every address are always included.
+	TLSHosts []string `yaml:"tls_hosts" json:"tls_hosts"`
 }
 
 // Notify configures completion/failure notifications.
@@ -359,6 +367,7 @@ func Default() Config {
 		Web: Web{
 			Listen:  ":8080",
 			Enabled: true,
+			TLS:     "auto",
 		},
 		Log: Log{Level: "info", Format: "text"},
 	}
@@ -487,6 +496,10 @@ func (c *Config) NeedsRestart(next *Config) []string {
 	if c.Web.Enabled != next.Web.Enabled {
 		out = append(out, "web.enabled")
 	}
+	if c.Web.TLS != next.Web.TLS || c.Web.TLSCert != next.Web.TLSCert || c.Web.TLSKey != next.Web.TLSKey ||
+		strings.Join(c.Web.TLSHosts, ",") != strings.Join(next.Web.TLSHosts, ",") {
+		out = append(out, "web.tls")
+	}
 	if c.Log != next.Log {
 		out = append(out, "log")
 	}
@@ -542,6 +555,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Workspace == "" {
 		errs = append(errs, errors.New("workspace is required"))
+	}
+	switch c.Web.TLS {
+	case "auto", "files", "off":
+	default:
+		errs = append(errs, fmt.Errorf("web.tls must be auto, files or off, not %q", c.Web.TLS))
+	}
+	if c.Web.TLS == "files" && (c.Web.TLSCert == "" || c.Web.TLSKey == "") {
+		errs = append(errs, errors.New("web.tls is files: set web.tls_cert and web.tls_key"))
 	}
 	switch c.Output.Backup {
 	case "off", "also", "only":

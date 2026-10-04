@@ -51,8 +51,9 @@ include it.
    `check` prints the MakeMKV version and the drive's state, and fails with
    the reason if MakeMKV's key or beta has expired.
 
-5. **Open** `http://<this machine>:8080`, create your account (the first
-   visit asks for a user name and password), and insert a disc.
+5. **Open** `https://<this machine>:8080`, accept the certificate once (see
+   [HTTPS](#https)), create your account (the first visit asks for a user
+   name and password), and insert a disc.
 
 To update, download the new binary, install it over the old one and
 `sudo systemctl restart media-ripper`. A disc in the middle of a rip
@@ -248,6 +249,24 @@ episode numbering for a season.
 State lives in `workspace/state/`: `history.jsonl`, `discs.json` (ripped
 fingerprints) and `series.json` (next episode per season). All plain JSON;
 delete an entry to make the daemon forget it.
+
+## HTTPS
+
+The web UI uses HTTPS by default (`web.tls: auto`). On first start
+media-ripper makes a certificate on this machine for its host name, every
+address it has and any names in `web.tls_hosts` (a Tailscale or DNS name),
+and renews it before it expires. Browsers ask once to trust it, since no
+public authority signed it: compare the SHA-256 fingerprint the browser
+shows with the one in Settings → Web (also in the log at startup). Plain
+`http://` on the same port is redirected to `https://`.
+
+- **Your own certificate** (Let's Encrypt, a home CA): `web.tls: files` with
+  `web.tls_cert` and `web.tls_key`.
+- **Behind a reverse proxy** such as `tailscale serve`: point it at
+  `https+insecure://localhost:8080` (the proxy talks HTTPS to the ripper and
+  the browser talks to the proxy), or set `web.tls: off` if the proxy is the
+  only way in.
+- `web.tls: off` serves plain HTTP.
 
 ## Sign-in
 

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -152,5 +153,36 @@ func TestGuessingIsSlowedDown(t *testing.T) {
 	// Even the right password waits.
 	if code, _, _ := c.do("POST", "/api/auth/login", `{"username":"jack","password":"correct horse battery"}`); code != http.StatusTooManyRequests {
 		t.Fatalf("during the wait: %d", code)
+	}
+}
+
+func TestBrowserHTTPS(t *testing.T) {
+	tlsState := &tls.ConnectionState{}
+	cases := []struct {
+		name   string
+		remote string
+		tls    bool
+		proto  string
+		want   bool
+	}{
+		{"direct https", "10.5.3.20:5000", true, "", true},
+		{"direct http", "10.5.3.20:5000", false, "", false},
+		{"proxy says https", "127.0.0.1:4000", true, "https", true},
+		{"Tailscale serve: http browser, TLS to us", "127.0.0.1:4000", true, "http", false},
+		{"local proxy without the header", "127.0.0.1:4000", true, "", false},
+		{"remote client cannot claim https", "10.5.3.20:5000", false, "https", false},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "/", nil)
+		r.RemoteAddr = c.remote
+		if c.tls {
+			r.TLS = tlsState
+		}
+		if c.proto != "" {
+			r.Header.Set("X-Forwarded-Proto", c.proto)
+		}
+		if got := browserHTTPS(r); got != c.want {
+			t.Errorf("%s: %v", c.name, got)
+		}
 	}
 }
