@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 	"unicode/utf16"
 )
 
@@ -119,8 +120,65 @@ func (d *linuxDrive) Status() (Status, error) {
 
 func (d *linuxDrive) Eject() error {
 	_ = d.Lock(false)
-	_, err := d.ioctl(ioctlEject, 0)
-	return err
+	if _, err := d.ioctl(ioctlEject, 0); err != nil {
+		return err
+	}
+	// The ioctl can report success while the drive refuses to open, e.g.
+	// when a desktop has automounted the disc. Check the tray really moved.
+	if err := confirmEjected(d.Status, ejectWait, ejectPoll); err != nil {
+		if mp := mountPoint(d.path); mp != "" {
+			return fmt.Errorf("eject %s: %w; the disc is mounted at %s (desktop automount?)", d.path, err, mp)
+		}
+		return fmt.Errorf("eject %s: %w", d.path, err)
+	}
+	return nil
+}
+
+var (
+	ejectWait = 5 * time.Second
+	ejectPoll = 250 * time.Millisecond
+)
+
+// confirmEjected polls the drive until the tray is open or the disc is gone.
+// A drive that cannot report its status (NoInfo) is taken at its word.
+func confirmEjected(status func() (Status, error), wait, poll time.Duration) error {
+	deadline := time.Now().Add(wait)
+	last := NoInfo
+	for {
+		st, err := status()
+		if err == nil {
+			last = st
+			if st == TrayOpen || st == NoDisc {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			if last == NoInfo {
+				return nil
+			}
+			return fmt.Errorf("tray did not open (status %s)", last)
+		}
+		time.Sleep(poll)
+	}
+}
+
+// mountPoint returns where device is mounted, or "" if it is not.
+func mountPoint(device string) string {
+	real, err := filepath.EvalSymlinks(device)
+	if err != nil {
+		real = device
+	}
+	data, err := os.ReadFile("/proc/self/mounts")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 2 && (f[0] == device || f[0] == real) {
+			return strings.ReplaceAll(f[1], "\\040", " ")
+		}
+	}
+	return ""
 }
 
 func (d *linuxDrive) CloseTray() error {

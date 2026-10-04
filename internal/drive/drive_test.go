@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"testing"
+	"time"
 )
 
 type memImage []byte
@@ -94,5 +95,32 @@ func TestEmptyImage(t *testing.T) {
 	_, label, err := FingerprintReader(memImage(bytes.Repeat([]byte{0}, 20*sectorSize)))
 	if err != nil || label != "" {
 		t.Fatalf("got %q %v", label, err)
+	}
+}
+
+func TestConfirmEjected(t *testing.T) {
+	seq := func(sts ...Status) func() (Status, error) {
+		i := 0
+		return func() (Status, error) {
+			st := sts[min(i, len(sts)-1)]
+			i++
+			return st, nil
+		}
+	}
+	cases := []struct {
+		name    string
+		status  func() (Status, error)
+		wantErr bool
+	}{
+		{"opens after a moment", seq(DiscOK, NotReady, TrayOpen), false},
+		{"slot loader reports no disc", seq(DiscOK, NoDisc), false},
+		{"refused while mounted", seq(DiscOK), true},
+		{"drive cannot report", seq(NoInfo), false},
+	}
+	for _, c := range cases {
+		err := confirmEjected(c.status, 20*time.Millisecond, time.Millisecond)
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+		}
 	}
 }

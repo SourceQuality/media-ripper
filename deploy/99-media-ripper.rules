@@ -2,3 +2,8 @@
 # makemkvcon can run without root. Install to /etc/udev/rules.d/ and run
 # `udevadm control --reload && udevadm trigger`.
 SUBSYSTEM=="scsi_generic", ATTRS{type}=="5", GROUP="cdrom", MODE="0660"
+
+# Keep desktops (GNOME, KDE) from automounting discs. A mounted disc cannot
+# be ejected, so the tray would stay shut after a rip. The ripper reads the
+# raw device and never needs the filesystem mounted.
+SUBSYSTEM=="block", KERNEL=="sr[0-9]*", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"
