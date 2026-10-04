@@ -80,6 +80,14 @@ type Manager struct {
 	recent  []*Job
 	started time.Time
 	storage storageMonitor
+	// runCtx is Run's context: once it is done the service is stopping,
+	// and jobs ending then are paused, not cancelled.
+	runCtx context.Context
+	// finishing are paused jobs being finished without their disc.
+	finishing []*Job
+	// live is each job's Discord message, kept across settings changes
+	// and restarts.
+	live *notify.LiveMessages
 }
 
 // New builds a manager. Drives are opened lazily by Run.
@@ -91,6 +99,7 @@ func New(deps Deps) *Manager {
 		deps.OpenDrive = drive.Open
 	}
 	m := &Manager{deps: deps, log: deps.Logger, started: time.Now()}
+	m.live = &notify.LiveMessages{File: filepath.Join(deps.Config.StateDir(), "discord-messages.json")}
 	m.SetConfig(deps.Config)
 	return m
 }
@@ -178,7 +187,7 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 	if rt.notifier == nil {
 		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log,
 			Discord: &notify.Discord{BotToken: cfg.Notify.Discord.BotToken, ChannelID: cfg.Notify.Discord.ChannelID, WebhookURL: cfg.Notify.Discord.WebhookURL,
-				Buttons: cfg.Notify.Discord.Buttons}}
+				Buttons: cfg.Notify.Discord.Buttons, Live: m.live}}
 	}
 	return rt
 }
@@ -196,10 +205,17 @@ func (m *Manager) Run(ctx context.Context) error {
 	if err := os.MkdirAll(cfg.RipDir(), 0o775); err != nil {
 		return err
 	}
+	m.mu.Lock()
+	m.runCtx = ctx
+	m.mu.Unlock()
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		m.finishEjected(ctx)
+	}()
 	go func() {
 		defer wg.Done()
 		m.watchStorage(ctx)
@@ -294,10 +310,12 @@ type DriveStatus struct {
 
 // Snapshot is the whole system state for the UI.
 type Snapshot struct {
-	Drives  []DriveStatus  `json:"drives"`
-	Recent  []Job          `json:"recent"`
-	Started time.Time      `json:"started"`
-	Storage *StorageStatus `json:"storage,omitempty"`
+	Drives []DriveStatus `json:"drives"`
+	Recent []Job         `json:"recent"`
+	// Finishing are jobs carried on after a restart without their disc.
+	Finishing []Job          `json:"finishing,omitempty"`
+	Started   time.Time      `json:"started"`
+	Storage   *StorageStatus `json:"storage,omitempty"`
 }
 
 // Snapshot returns the current state.
@@ -305,6 +323,7 @@ func (m *Manager) Snapshot() Snapshot {
 	m.mu.Lock()
 	runners := append([]*runner(nil), m.runners...)
 	recent := append([]*Job(nil), m.recent...)
+	finishing := append([]*Job(nil), m.finishing...)
 	m.mu.Unlock()
 	s := Snapshot{Started: m.started, Drives: []DriveStatus{}, Recent: []Job{}}
 	for _, r := range runners {
@@ -316,6 +335,9 @@ func (m *Manager) Snapshot() Snapshot {
 	}
 	for i := len(recent) - 1; i >= 0; i-- {
 		s.Recent = append(s.Recent, recent[i].Snapshot())
+	}
+	for _, j := range finishing {
+		s.Finishing = append(s.Finishing, j.Snapshot())
 	}
 	return s
 }
@@ -512,6 +534,9 @@ func (r *runner) loop(ctx context.Context) {
 		if fp == handled && !forced {
 			continue
 		}
+		if r.m.finishingDisc(fp) {
+			continue // its paused job is still being finished
+		}
 		r.mu.Lock()
 		r.handled = fp
 		r.forced = false
@@ -609,8 +634,17 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		return
 	}
 	rs := openResume(workDir, job, cfg.Output.Resume)
+	if id, started, ok := rs.restarted(); ok {
+		// Carried on under the same id: one history record and one
+		// Discord message per disc, however often the service restarts.
+		job.set(func(j *Job) { j.ID, j.StartedAt = id, started })
+		job.logf("carrying on after a restart")
+	}
 	if rs.resumable() {
 		job.logf("resuming: reusing titles ripped or delivered by an earlier attempt")
+	}
+	if err := rs.begin(job.ID, job.StartedAt); err != nil {
+		log.Warn("resume state", "err", err)
 	}
 	backupOnly := cfg.Output.Backup == "only"
 	var backupBytes int64
@@ -827,7 +861,10 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	log := m.log.With("drive", job.Drive, "job", job.ID)
 	workDir := workDir(cfg, job)
 
-	m.finalProgress(ctx, job)
+	if m.pausedByShutdown(snap) {
+		m.pauseForRestart(ctx, d, job)
+		return snap.Ejected
+	}
 
 	switch snap.Stage {
 	case StageDone, StageReview:
@@ -852,6 +889,9 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			ev.Type = "review"
 		}
 		ev.Outputs, ev.Elapsed, ev.Error, ev.ImportFailed = outs, snap.Elapsed, strings.Join(snap.Warnings, "; "), importFailed(snap)
+		if lines, summary := progressLines(snap); lines != nil {
+			ev.Items, ev.Summary = lines, summary
+		}
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case StageFailed, StageCancelled:
 		if !cfg.Output.KeepWorkspaceOnError && !cfg.Output.Resume {
@@ -860,6 +900,9 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		log.Error("job "+string(snap.Stage), "title", displayTitle(job), "err", snap.Error)
 		ev := m.event(job, "failed")
 		ev.Error, ev.Elapsed = snap.Error, snap.Elapsed
+		if lines, summary := progressLines(snap); lines != nil {
+			ev.Items, ev.Summary = lines, summary
+		}
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case StageSkipped:
 		_ = os.RemoveAll(workDir)

@@ -370,8 +370,12 @@
     $('#version').textContent = s.version || '';
     $('#notices').innerHTML = notices(s);
     models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
-    $('#drives').innerHTML = s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>';
-    const busy = s.drives.filter(d => d.job && !terminal(d.job.stage)).length;
+    // Jobs carried on after a restart whose disc was already ejected.
+    const finishing = (s.finishing || []).map(j => driveCard({ path: j.drive, model: models[j.drive], job: j })
+      .replace('<div class="card">', '<div class="card finishing">').replace(/<button class="danger"[^>]*>Cancel<\/button>/, ''));
+    $('#drives').innerHTML = (s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>') +
+      (finishing.length ? `<h3 class="muted small">Finishing after a restart (disc already out)</h3>${finishing.join('')}` : '');
+    const busy = s.drives.filter(d => d.job && !terminal(d.job.stage)).length + finishing.length;
     setCount('drives', busy ? busy + ' ripping' : '', busy > 0);
     renderRecent();
   };

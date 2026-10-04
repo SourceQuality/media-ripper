@@ -37,15 +37,6 @@ func (m *Manager) liveProgress(ctx context.Context, job *Job, stop <-chan struct
 	}
 }
 
-// finalProgress leaves the live message showing how the disc ended,
-// without buttons.
-func (m *Manager) finalProgress(ctx context.Context, job *Job) {
-	ev := m.event(job, "progress")
-	ev.Items, ev.Summary = progressLines(job.Snapshot())
-	ev.Final = true
-	job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
-}
-
 // progressLines describes each title of the disc in progress, one line
 // each, and the disc as a whole: the same states as the web UI's drive card.
 func progressLines(s Job) ([]string, string) {
