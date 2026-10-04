@@ -607,7 +607,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	if rs.resumable() {
 		job.logf("resuming: reusing titles ripped or delivered by an earlier attempt")
 	}
-	if warning, err := checkSpace(workDir, cfg.Output.Path, sel, rs); err != nil {
+	if warning, err := checkSpace(workDir, cfg.Output.Path, sel, rs, diskSpace); err != nil {
 		m.fail(job, fmt.Errorf("not enough space: %w", err))
 		return
 	} else if warning != "" {
