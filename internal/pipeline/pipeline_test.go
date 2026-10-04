@@ -1066,6 +1066,18 @@ func TestDiscManifestExport(t *testing.T) {
 	if _, err := e.m.DiscManifest("nope", "v"); err == nil {
 		t.Fatal("unknown job")
 	}
+	// The file list comes from the job while it is in memory (so it shows
+	// while the disc rips) and from the saved inventory after a restart.
+	if inv, err := e.m.DiscFiles(j.ID); err != nil || len(inv.Files) != 3 || inv.ContentHash != hash {
+		t.Fatalf("live files: %+v %v", inv, err)
+	}
+	fresh := New(Deps{Config: e.cfg, Store: e.st, Notifier: e.m.deps.Notifier, Logger: e.m.log})
+	if inv, err := fresh.DiscFiles(j.ID); err != nil || len(inv.Files) != 3 || inv.Files[0].Path != "BDMV/STREAM/00001.m2ts" {
+		t.Fatalf("saved files: %+v %v", inv, err)
+	}
+	if _, err := fresh.DiscFiles("nope"); err == nil {
+		t.Fatal("unknown job has no files")
+	}
 }
 
 func TestFullDiscBackup(t *testing.T) {

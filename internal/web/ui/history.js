@@ -18,12 +18,13 @@
 
   let all = [];
   const icon = { done: '✓', failed: '✕', cancelled: '–', skipped: '↷', review: '?' };
+  const terminal = st => ['done', 'failed', 'cancelled', 'skipped', 'review'].includes(st);
 
   const renderList = () => {
     const q = $('#filter').value.trim().toLowerCase();
     const rows = all.filter(j => !q || heading(j).toLowerCase().includes(q) || (j.label || '').toLowerCase().includes(q));
     $('#jobs').innerHTML = rows.map(j => `<li><a href="#${encodeURIComponent(j.id)}" class="${location.hash === '#' + encodeURIComponent(j.id) ? 'sel' : ''}">
-      <span class="badge ${esc(j.stage)}">${icon[j.stage] || '•'}</span><span><strong>${esc(heading(j))}</strong><br><span class="muted">${esc(fmtWhen(j.finished_at || j.started_at))}</span></span></a></li>`).join('') || '<li class="muted">Nothing yet</li>';
+      <span class="badge ${esc(j.stage)}">${icon[j.stage] || '▶'}</span><span><strong>${esc(heading(j))}</strong><br><span class="muted">${terminal(j.stage) ? esc(fmtWhen(j.finished_at || j.started_at)) : esc(j.stage) + ' now'}</span></span></a></li>`).join('') || '<li class="muted">Nothing yet</li>';
   };
 
   const decision = (j, t) => {
@@ -44,12 +45,30 @@
     return `<div class="small">${o.ripped_as ? `<code>${esc(o.ripped_as)}</code> → ` : ''}<span class="path">${esc(o.path)}</span></div><div class="small">${state}</div>`;
   };
 
+  // The disc's files as read for its content hash: fetched once per disc,
+  // never read from the drive again.
+  let files = { id: '', inv: null, open: false };
+  const filesCard = () => {
+    const inv = files.inv;
+    if (!inv || !(inv.files || []).length) return '';
+    const total = inv.files.reduce((n, f) => n + f.size, 0);
+    return `<div class="card"><details id="files"${files.open ? ' open' : ''}><summary><h2>Files on the disc</h2> <span class="muted">${inv.files.length} files · ${esc(fmtBytes(total))}</span></summary>
+      <div class="table-wrap"><table class="titles"><thead><tr><th>Path</th><th>Size</th></tr></thead><tbody>
+      ${inv.files.map(f => `<tr><td><code>${esc(f.path)}</code></td><td class="num">${esc(fmtBytes(f.size) || f.size + ' B')}</td></tr>`).join('')}
+      </tbody></table></div></details></div>`;
+  };
+  const loadFiles = id => files.id === id && files.inv ? Promise.resolve() :
+    fetch(`/api/jobs/${encodeURIComponent(id)}/files`).then(r => r.ok ? r.json() : null).then(inv => { files = { id, inv: inv && inv.files ? inv : null, open: files.id === id && files.open }; }).catch(() => {});
+
+  let refresh;
   const renderDetail = id => {
+    clearTimeout(refresh);
     const view = $('#detail-view');
     if (!id) { view.innerHTML = '<div class="card empty">Choose a disc</div>'; return; }
-    fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => {
+    fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => loadFiles(id).then(() => j)).then(j => {
       if (j.error) { view.innerHTML = `<div class="card empty">${esc(j.error)}</div>`; return; }
-      const ids = [['Disc label', j.label], ['Fingerprint', j.fingerprint], ['Content hash', j.content_hash], ['Catalogue', j.catalog], ['Backup', j.backup && j.backup.path], ['Drive', j.drive], ['Disc', j.disc_type],
+      const discdb = j.hash_matched ? 'Matched: this exact disc, by its content hash' : j.content_hash ? 'No disc with this content hash' : '';
+      const ids = [['Disc label', j.label], ['Fingerprint', j.fingerprint], ['Content hash', j.content_hash], ['TheDiscDB', discdb], ['Catalogue', j.catalog], ['Backup', j.backup && j.backup.path], ['Drive', j.drive], ['Disc', j.disc_type],
         ['Started', fmtWhen(j.started_at)], ['Took', j.elapsed]].filter(([, v]) => v);
       const titles = (j.titles || []).map(t => `<tr>
         <td><code>${esc(t.source || 't' + pad(t.id))}</code><div class="muted small">title ${t.id}</div></td>
@@ -62,7 +81,7 @@
         ${j.verification ? `<div class="sub muted">${esc(j.verification)}</div>` : ''}
         ${j.error ? `<div class="stage failed">${esc(j.error)}</div>` : ''}
         ${(j.warnings || []).map(w => `<div class="warning">${esc(w)}</div>`).join('')}
-        <dl class="ids">${ids.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+        <dl class="ids">${ids.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${k === 'Content hash' ? `<code>${esc(v)}</code> <button class="small" data-copy="${esc(v)}">Copy</button>` : esc(v)}</dd>`).join('')}</dl>
         <div class="row actions-row">
           <a class="btn" href="/api/jobs/${encodeURIComponent(j.id)}/manifest" download>Disc manifest (.odm.json)</a>
           <a class="btn" href="/api/jobs/${encodeURIComponent(j.id)}/contribution" target="_blank">Title mapping</a>
@@ -73,7 +92,15 @@
       <div class="card"><h2>Every title on the disc</h2>
         <div class="table-wrap"><table class="titles"><thead><tr><th>Source</th><th>Length</th><th>Size</th><th>Tracks</th><th>What it is</th><th>File</th></tr></thead><tbody>${titles || '<tr><td colspan="6" class="empty">No scan recorded</td></tr>'}</tbody></table></div>
       </div>
+      ${filesCard()}
       ${(j.log || []).length ? `<div class="card"><h2>Log</h2><pre class="log">${esc(j.log.map(l => `${new Date(l.time).toLocaleTimeString()}  ${l.message}`).join('\n'))}</pre></div>` : ''}`;
+      const det = $('#files');
+      if (det) det.ontoggle = () => { files.open = det.open; };
+      view.querySelectorAll('button[data-copy]').forEach(b => b.onclick = () => {
+        navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = 'Copied'; }, () => { b.textContent = 'Select it to copy'; });
+      });
+      // A disc still being ripped: keep its state and log current.
+      if (!terminal(j.stage)) refresh = setTimeout(() => { if (decodeURIComponent(location.hash.slice(1)) === id) renderDetail(id); }, 5000);
     });
   };
 
@@ -91,5 +118,14 @@
   const route = () => { renderList(); renderDetail(decodeURIComponent(location.hash.slice(1))); };
   $('#filter').oninput = renderList;
   window.addEventListener('hashchange', route);
-  fetch('/api/history?limit=500').then(r => r.json()).then(h => { all = Array.isArray(h) ? h : []; route(); });
+  // Discs being ripped right now head the list.
+  Promise.all([
+    fetch('/api/history?limit=500').then(r => r.json()).catch(() => []),
+    fetch('/api/status').then(r => r.json()).catch(() => ({})),
+  ]).then(([h, s]) => {
+    const live = ((s && s.drives) || []).map(d => d.job).filter(j => j && !terminal(j.stage));
+    const done = Array.isArray(h) ? h : [];
+    all = [...live, ...done.filter(j => !live.some(l => l.id === j.id))];
+    route();
+  });
 })();

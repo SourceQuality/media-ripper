@@ -47,16 +47,39 @@ func (m *Manager) Record(id string) (Job, bool) {
 	return Job{}, false
 }
 
-// DiscManifest builds the Optical Disc Manifest of a finished job, for
-// contributing the disc to TheDiscDB.
+// DiscFiles is the disc's file inventory as read for its content hash:
+// from the job while it runs, from the saved inventory afterwards. Nothing
+// is read from the disc again.
+func (m *Manager) DiscFiles(id string) (store.DiscInventory, error) {
+	if job := m.recentJob(id); job != nil {
+		job.mu.Lock()
+		files, hash := job.discFiles, job.ContentHash
+		job.mu.Unlock()
+		if len(files) > 0 {
+			inv := store.DiscInventory{ContentHash: hash}
+			for _, f := range files {
+				inv.Files = append(inv.Files, store.FileEntry{Path: f.Path, Size: f.Size})
+			}
+			return inv, nil
+		}
+	}
+	inv, err := m.deps.Store.Inventory(id)
+	if err != nil || len(inv.Files) == 0 {
+		return store.DiscInventory{}, errors.New("no file inventory was read from this disc (it is read at the start of a rip; needs v0.6.0 or later)")
+	}
+	return inv, nil
+}
+
+// DiscManifest builds the Optical Disc Manifest of a job, for contributing
+// the disc to TheDiscDB. It works while the disc is still ripping.
 func (m *Manager) DiscManifest(id, version string) (*odm.Manifest, error) {
 	j, ok := m.Record(id)
 	if !ok {
 		return nil, errors.New("no such job")
 	}
-	inv, err := m.deps.Store.Inventory(id)
-	if err != nil || len(inv.Files) == 0 {
-		return nil, errors.New("no file inventory was read from this disc (needs v0.6.0 or later when it was ripped)")
+	inv, err := m.DiscFiles(id)
+	if err != nil {
+		return nil, err
 	}
 	files := make([]odm.File, 0, len(inv.Files))
 	for _, f := range inv.Files {

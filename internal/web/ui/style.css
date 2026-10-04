@@ -196,3 +196,14 @@ a.nav { color: var(--fg); text-decoration: none; font-weight: 600; font-size: 17
 .savebar { position: sticky; bottom: 0; display: flex; align-items: center; gap: 10px; padding: 12px 0; background: var(--bg); border-top: 1px solid var(--line); }
 button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 #save-status.error { color: var(--bad); }
+
+/* Disc details: the file list folds away; the hash can be copied. */
+details > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 10px; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary h2 { display: inline; margin: 0; }
+details > summary::before { content: '▸'; color: var(--muted); }
+details[open] > summary::before { content: '▾'; }
+details[open] > summary { margin-bottom: 10px; }
+td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+button.small { font-size: 12px; padding: 2px 8px; }
+.ids dd code { overflow-wrap: anywhere; }
