@@ -607,7 +607,20 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	if rs.resumable() {
 		job.logf("resuming: reusing titles ripped or delivered by an earlier attempt")
 	}
-	if warning, err := checkSpace(workDir, cfg.Output.Path, sel, rs, diskSpace); err != nil {
+	backupOnly := cfg.Output.Backup == "only"
+	var backupBytes int64
+	if cfg.Output.Backup != "off" {
+		job.mu.Lock()
+		for _, f := range job.discFiles {
+			backupBytes += f.Size
+		}
+		job.mu.Unlock()
+	}
+	spaceSel := sel
+	if backupOnly {
+		spaceSel = &selector.Selection{}
+	}
+	if warning, err := checkSpace(workDir, cfg.Output.Path, spaceSel, rs, backupBytes, diskSpace); err != nil {
 		m.fail(job, fmt.Errorf("not enough space: %w", err))
 		return
 	} else if warning != "" {
@@ -688,6 +701,9 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 
 	job.set(func(j *Job) { j.ripping = true })
 	for i, pick := range sel.Picks {
+		if backupOnly {
+			break
+		}
 		if ctx.Err() != nil {
 			job.setStage(StageCancelled, "cancelled")
 			return
@@ -720,6 +736,16 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			work <- i
 		}
 	}
+	if cfg.Output.Backup != "off" && bgFailed() == nil && ctx.Err() == nil {
+		if err := m.backupDisc(ctx, job); err != nil {
+			if backupOnly || ctx.Err() != nil {
+				m.fail(job, err)
+				return
+			}
+			job.warn("full-disc backup failed: " + err.Error())
+			job.logf("full-disc backup failed: %v", err)
+		}
+	}
 	job.set(func(j *Job) { j.ripping = false })
 	if bgFailed() == nil && cfg.Eject.AfterRip && cfg.Eject.OnSuccess {
 		_ = d.Lock(false)
@@ -733,6 +759,11 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		}
 	}
 
+	if backupOnly {
+		stopWorker()
+		job.setStage(StageDone, "done")
+		return false
+	}
 	if work != nil {
 		stopWorker()
 		if err := bgFailed(); err != nil {

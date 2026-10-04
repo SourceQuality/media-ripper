@@ -116,6 +116,19 @@ type Output struct {
 	// attempt on the same disc skips what is already ripped or delivered.
 	Resume       bool     `yaml:"resume" json:"resume"`
 	ResumeMaxAge Duration `yaml:"resume_max_age" json:"resume_max_age"`
+	// Backup keeps a full decrypted copy of the disc: off | also (titles
+	// and the copy) | only (just the copy). BackupPath defaults to
+	// <path>/_backups.
+	Backup     string `yaml:"backup" json:"backup"`
+	BackupPath string `yaml:"backup_path" json:"backup_path"`
+}
+
+// BackupDir is where full-disc copies go.
+func (c *Config) BackupDir() string {
+	if c.Output.BackupPath != "" {
+		return c.Output.BackupPath
+	}
+	return filepath.Join(c.Output.Path, "_backups")
 }
 
 // MakeMKV configures the makemkvcon invocation.
@@ -270,6 +283,7 @@ func Default() Config {
 			DirMode:         0o775,
 			FileMode:        0o664,
 			Resume:          true,
+			Backup:          "off",
 			ResumeMaxAge:    Duration(72 * time.Hour),
 		},
 		MakeMKV: MakeMKV{
@@ -505,6 +519,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Workspace == "" {
 		errs = append(errs, errors.New("workspace is required"))
+	}
+	switch c.Output.Backup {
+	case "off", "also", "only":
+	default:
+		errs = append(errs, fmt.Errorf("output.backup must be off, also or only, not %q", c.Output.Backup))
 	}
 	switch c.Arr.ImportPolicy {
 	case "always", "confident", "verified":

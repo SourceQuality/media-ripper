@@ -80,11 +80,24 @@ const fakeMakemkv = `#!/bin/sh
 cmd=""
 for a in "$@"; do
   case "$a" in
-    info|mkv) cmd=$a ;;
+    info|mkv|backup) cmd=$a ;;
   esac
 done
 if [ "$cmd" = info ]; then
   cat "$FAKE_INFO"
+  exit 0
+fi
+if [ "$cmd" = backup ]; then
+  outdir=$(eval echo \${$#})
+  echo 'PRGC:5018,0,"Backing up disc"'
+  echo 'PRGV:0,0,65536'
+  if [ -n "$FAKE_BACKUP_FAIL" ]; then
+    echo 'MSG:2003,0,1,"Error reading sector","Error reading sector"'
+    exit 1
+  fi
+  mkdir -p "$outdir/BDMV/STREAM"
+  head -c 300000 /dev/zero > "$outdir/BDMV/STREAM/00001.m2ts"
+  echo 'PRGV:65536,65536,65536'
   exit 0
 fi
 # mkv: last two args are title id and outdir
@@ -1051,5 +1064,45 @@ func TestDiscManifestExport(t *testing.T) {
 	}
 	if _, err := e.m.DiscManifest("nope", "v"); err == nil {
 		t.Fatal("unknown job")
+	}
+}
+
+func TestFullDiscBackup(t *testing.T) {
+	matrix := &metadata.Identity{Kind: metadata.KindMovie, Title: "The Matrix", Year: 1999, TMDBID: 603, Runtime: 136 * time.Minute, Confidence: 1, Source: "test"}
+	for _, c := range []struct {
+		mode, fail string
+		outputs    int
+		backup     bool
+		warning    bool
+	}{
+		{"also", "", 1, true, false},
+		{"only", "", 0, true, false},
+		{"also", "1", 1, false, true},
+	} {
+		e := setup(t, movieInfo, fakeProvider{matrix})
+		e.cfg.Output.Backup = c.mode
+		e.m.SetConfig(e.cfg)
+		t.Setenv("FAKE_BACKUP_FAIL", c.fail)
+		ctx, cancel := context.WithCancel(context.Background())
+		go e.m.Run(ctx)
+		e.drv.insert("fp-matrix", "THE_MATRIX")
+		j := e.waitDone(t)
+		cancel()
+		name := c.mode + " fail=" + c.fail
+		if j.Stage != StageDone || len(j.Outputs) != c.outputs || (j.Backup != nil) != c.backup || (len(j.Warnings) > 0) != c.warning {
+			t.Fatalf("%s: stage=%s outputs=%d backup=%+v warnings=%v err=%s", name, j.Stage, len(j.Outputs), j.Backup, j.Warnings, j.Error)
+		}
+		if c.backup {
+			want := filepath.Join(e.out, "_backups", "The Matrix (1999)")
+			if j.Backup.Path != want || j.Backup.Size != 300000 {
+				t.Fatalf("%s: backup = %+v", name, j.Backup)
+			}
+			if _, err := os.Stat(filepath.Join(want, "BDMV", "STREAM", "00001.m2ts")); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		}
+		if leftovers, _ := filepath.Glob(filepath.Join(e.out, "_backups", "*.part")); len(leftovers) != 0 {
+			t.Fatalf("%s: partial backup left behind: %v", name, leftovers)
+		}
 	}
 }

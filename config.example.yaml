@@ -43,6 +43,12 @@ output:
   # Kept workspaces older than resume_max_age are removed at startup.
   resume: true
   resume_max_age: 72h
+  # Keep a full decrypted copy of each disc (a BDMV/VIDEO_TS folder that
+  # plays like the disc), made while it is still in the drive, after the
+  # titles are ripped. 30-90 GB per Blu-ray.
+  #   off:  no copy   also: titles and the copy   only: just the copy
+  backup: "off"
+  backup_path: ""           # default: <output.path>/_backups
 
 makemkv:
   binary: makemkvcon

@@ -32,8 +32,10 @@ const spaceMargin = 1.05
 // It returns an error to stop the job and a warning to log and carry on:
 // titles are delivered while later ones rip, which frees the workspace as
 // it goes, so only room for the largest title is strictly needed there.
-func checkSpace(workDir, library string, sel *selector.Selection, rs *resume, diskSpace spaceFunc) (warning string, err error) {
+// backupBytes is the size of a full-disc copy, written to the library.
+func checkSpace(workDir, library string, sel *selector.Selection, rs *resume, backupBytes int64, diskSpace spaceFunc) (warning string, err error) {
 	var toRip, largest, toDeliver int64
+	toDeliver = int64(float64(backupBytes) * spaceMargin)
 	for _, p := range sel.Picks {
 		size := int64(float64(p.Title.SizeBytes) * spaceMargin)
 		if _, ok := rs.delivered(p.Title.ID); ok {
@@ -62,7 +64,7 @@ func checkSpace(workDir, library string, sel *selector.Selection, rs *resume, di
 		warning = fmt.Sprintf("workspace has %s free for %s of titles; relying on delivery freeing space while ripping", gb(wsFree), gb(toRip))
 	}
 	libFree, libDev, err := diskSpace(library)
-	if err != nil || libDev == wsDev {
+	if err != nil || (libDev == wsDev && backupBytes == 0) {
 		// Same filesystem: delivery renames, the workspace check covers it.
 		return warning, nil
 	}

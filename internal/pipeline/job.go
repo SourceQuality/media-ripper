@@ -90,6 +90,8 @@ type Job struct {
 	Log       []LogLine           `json:"log,omitempty"`
 	Current   int                 `json:"current,omitempty"` // 1-based pick in progress
 	Total     int                 `json:"total,omitempty"`   // number of picks
+	// Backup is the full-disc copy, when one was made.
+	Backup *Output `json:"backup,omitempty"`
 	// Catalog names the catalogue entry the titles were taken from, and
 	// how many scanned titles matched it exactly out of those compared.
 	Catalog         string `json:"catalog,omitempty"`
@@ -273,7 +275,7 @@ func (j *Job) Snapshot() Job {
 		ID: j.ID, Drive: j.Drive, Fingerprint: j.Fingerprint, Label: j.Label, DiscType: j.DiscType,
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
 		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun,
-		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog, CatalogDisc: j.CatalogDisc,
+		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog, CatalogDisc: j.CatalogDisc, Backup: j.Backup,
 		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared, ContentHash: j.ContentHash, HashMatched: j.HashMatched,
 	}
 	c.Warnings = append([]string(nil), j.Warnings...)

@@ -49,7 +49,7 @@
     if (!id) { view.innerHTML = '<div class="card empty">Choose a disc</div>'; return; }
     fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => {
       if (j.error) { view.innerHTML = `<div class="card empty">${esc(j.error)}</div>`; return; }
-      const ids = [['Disc label', j.label], ['Fingerprint', j.fingerprint], ['Content hash', j.content_hash], ['Catalogue', j.catalog], ['Drive', j.drive], ['Disc', j.disc_type],
+      const ids = [['Disc label', j.label], ['Fingerprint', j.fingerprint], ['Content hash', j.content_hash], ['Catalogue', j.catalog], ['Backup', j.backup && j.backup.path], ['Drive', j.drive], ['Disc', j.disc_type],
         ['Started', fmtWhen(j.started_at)], ['Took', j.elapsed]].filter(([, v]) => v);
       const titles = (j.titles || []).map(t => `<tr>
         <td><code>${esc(t.source || 't' + pad(t.id))}</code><div class="muted small">title ${t.id}</div></td>
