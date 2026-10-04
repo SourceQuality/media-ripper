@@ -93,16 +93,16 @@ func TestDiscordErrorsReachTheTestButton(t *testing.T) {
 }
 
 func TestDiscordInviteURL(t *testing.T) {
-	u, err := url.Parse(DiscordInviteURL(""))
+	if u := DiscordInviteURL(""); u != "" {
+		t.Fatalf("invite without an application = %q", u)
+	}
+	u, err := url.Parse(DiscordInviteURL("42"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := u.Query()
-	if u.Host != "discord.com" || q.Get("client_id") != DefaultDiscordApp || q.Get("scope") != "bot" || q.Get("permissions") != "19456" {
+	if u.Host != "discord.com" || q.Get("client_id") != "42" || q.Get("scope") != "bot" || q.Get("permissions") != "19456" {
 		t.Fatalf("invite = %s", u)
-	}
-	if q := mustQuery(t, DiscordInviteURL("42")); q.Get("client_id") != "42" {
-		t.Fatalf("custom app = %v", q)
 	}
 }
 
