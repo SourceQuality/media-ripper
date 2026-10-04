@@ -479,3 +479,73 @@ func TestCancelKeepsDiscIn(t *testing.T) {
 		t.Fatalf("cancel ejected the disc (%d ejects)", n)
 	}
 }
+
+// An identified disc's first episode is delivered while the second still rips.
+func TestDeliversWhileRipping(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test",
+		Episodes: []metadata.Episode{{Number: 1, Title: "Pilot"}, {Number: 2, Title: "The One with the Sonogram"}}}
+	e := setup(t, tvInfo, fakeProvider{id})
+	t.Setenv("FAKE_SLOW", "1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	first := filepath.Join(e.out, "TV Shows", "Friends (1994)", "Season 01", "Friends - S01E01 - Pilot.mkv")
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(first); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	var during Job
+	for _, d := range e.m.Snapshot().Drives {
+		if d.Job != nil {
+			during = *d.Job
+		}
+	}
+	if during.Stage != StageRipping || during.Current != 2 {
+		t.Fatalf("episode 1 not delivered during the second rip: stage=%s current=%d", during.Stage, during.Current)
+	}
+	j := e.waitDone(t)
+	if j.Stage != StageDone || len(j.Outputs) != 2 {
+		t.Fatalf("stage = %s outputs = %+v err=%s", j.Stage, j.Outputs, j.Error)
+	}
+	if next := e.st.NextEpisode("tmdb:1668", 1); next != 3 {
+		t.Fatalf("next episode = %d", next)
+	}
+	if entries, _ := os.ReadDir(e.cfg.RipDir()); len(entries) != 0 {
+		t.Fatalf("workspace not cleaned: %v", entries)
+	}
+}
+
+// A delivery that fails in the background fails the job and does not
+// advance the season, even though ripping had moved on.
+func TestBackgroundDeliveryFailure(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	t.Setenv("FAKE_SLOW", "1")
+	// A file where the show folder should go makes every delivery fail.
+	if err := os.MkdirAll(filepath.Join(e.out, "TV Shows"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(e.out, "TV Shows", "Friends (1994)"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	j := e.waitDone(t)
+	if j.Stage != StageFailed || j.Error == "" {
+		t.Fatalf("stage = %s err=%q", j.Stage, j.Error)
+	}
+	if next := e.st.NextEpisode("tmdb:1668", 1); next > 1 {
+		t.Fatalf("season advanced to %d after a failed disc", next)
+	}
+	if _, ok := e.st.Disc("fp-friends-1"); ok {
+		t.Fatal("failed disc recorded as ripped")
+	}
+}

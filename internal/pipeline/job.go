@@ -83,7 +83,11 @@ type Job struct {
 	Total     int                 `json:"total,omitempty"`   // number of picks
 
 	cancel func()
-	rt     *runtime
+	// ripping is set while titles are still being read from the disc and
+	// earlier ones are remuxed and delivered alongside; their steps go to
+	// the job log so the stage keeps showing the rip.
+	ripping bool
+	rt      *runtime
 }
 
 // TitleSummary is a compact view of a scanned title for the UI and history.
@@ -144,6 +148,19 @@ func (j *Job) set(fn func(j *Job)) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	fn(j)
+}
+
+// stepStage sets the stage for a remux or delivery step, or only logs it
+// while a rip of a later title is still running.
+func (j *Job) stepStage(s Stage, msg string) {
+	j.mu.Lock()
+	ripping := j.ripping
+	j.mu.Unlock()
+	if ripping {
+		j.logf("%s", msg)
+		return
+	}
+	j.setStage(s, msg)
 }
 
 func (j *Job) setStage(s Stage, msg string) {
