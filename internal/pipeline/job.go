@@ -49,6 +49,9 @@ type Output struct {
 	Size     int64         `json:"size"`
 	TitleID  int           `json:"title_id"`
 	Duration time.Duration `json:"duration"`
+	// Import is what Radarr/Sonarr did with the file: "imported", or
+	// "not imported: <reason>". Empty when no app takes the files.
+	Import string `json:"import,omitempty"`
 }
 
 // Job tracks one disc from detection to eject. All exported fields are

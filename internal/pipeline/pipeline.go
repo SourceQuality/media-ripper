@@ -824,11 +824,14 @@ type historyEntry struct {
 	Identity   *metadata.Identity  `json:"identity,omitempty"`
 	Selection  *selector.Selection `json:"selection,omitempty"`
 	Titles     []TitleSummary      `json:"titles,omitempty"`
+	Catalog    string              `json:"catalog,omitempty"`
+	Warnings   []string            `json:"warnings,omitempty"`
 }
 
 func historyRecord(s Job) historyEntry {
 	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
-		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles}
+		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles,
+		Catalog: s.Catalog, Warnings: s.Warnings}
 	if s.Identity != nil {
 		h.Kind = string(s.Identity.Kind)
 	}

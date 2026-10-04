@@ -89,13 +89,102 @@
 
   // Finished jobs come from the saved history so they survive restarts.
   let history = [];
+  const pad = n => String(n).padStart(2, '0');
+  const fmtDur = ns => {
+    const t = Math.round((ns || 0) / 1e9), h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), sec = t % 60;
+    return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+  };
+  const fmtElapsed = s => (s || '').replace(/(\d+)h/, '$1h ').replace(/(\d+)m(?!s)/, '$1m ').replace(/\d+s$/, m => s.includes('m') || s.includes('h') ? '' : m).trim();
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+  // A heading people read: "The Twilight Zone · Season 1, Disc 2".
+  const discHeading = j => {
+    const id = j.identity;
+    if (id && id.kind === 'tv' && id.title) return `${id.title} · Season ${id.season || 1}${id.disc ? ', Disc ' + id.disc : ''}`;
+    if (id && id.kind === 'movie' && id.title) return id.year ? `${id.title} (${id.year})` : id.title;
+    return j.label || 'Unidentified disc';
+  };
+  const matchLine = j => {
+    if (j.catalog) return `Titles from ${j.catalog}`;
+    // Records saved before the catalogue name was kept still say so in
+    // their pick reasons ("TheDiscDB: S01E08").
+    if (((j.selection && j.selection.picks) || []).some(p => (p.reason || '').startsWith('TheDiscDB'))) return 'Titles from TheDiscDB';
+    const id = j.identity;
+    if (id && id.kind !== 'unknown' && id.title) return `Identified via ${id.source || 'lookup'}; titles chosen by length`;
+    return j.label ? `Not identified (label ${j.label}); ripped by length` : '';
+  };
+
+  // One line per ripped title: what it is and what became of it.
+  const pickLines = j => {
+    const picks = ((j.selection && j.selection.picks) || []).slice().sort((a, b) => (a.season - b.season) || (a.episode - b.episode));
+    const outs = Object.fromEntries((j.outputs || []).map(o => [o.title_id, o]));
+    const movie = j.identity && j.identity.kind === 'movie';
+    return picks.map(p => {
+      const o = outs[p.title.id];
+      let mark = '–', state = 'not delivered', cls = 'pending';
+      if (o && o.import === 'imported') { mark = '✓'; state = 'imported'; cls = 'ok'; }
+      else if (o && o.import) { mark = '!'; state = o.import; cls = 'warn'; }
+      else if (o) { mark = '✓'; state = 'delivered'; cls = 'ok'; }
+      else if (j.stage === 'done') { mark = '!'; cls = 'warn'; }
+      const code = p.episode ? `S${pad(p.season)}E${pad(p.episode)}${p.episode_end > p.episode ? '–E' + pad(p.episode_end) : ''}` : (movie ? 'Movie' : `Title ${p.title.id}`);
+      const name = p.episode ? (p.episode_title || '') : (movie ? discHeading(j) : (p.title.source_file || ''));
+      const size = o ? o.size : p.title.size_bytes;
+      return `<li class="${cls}"><span class="mark">${mark}</span><span class="code">${esc(code)}</span><span class="name">${esc(name)}</span>
+        <span class="meta">${esc(fmtDur(p.title.duration))}</span><span class="meta">${size ? esc(fmtBytes(size)) : ''}</span><span class="state" title="${esc(state)}">${esc(state)}</span></li>`;
+    }).join('');
+  };
+
+  // "Skipped: extra “Tales of Tomorrow”; 2 short titles"
+  const skippedLine = j => {
+    const skipped = (j.selection && j.selection.skipped) || [];
+    if (!skipped.length) return '';
+    const named = [], other = [];
+    for (const s of skipped) {
+      const m = s.reason.match(/(?:extra|trailer|deletedscene|featurette) "([^"]+)"/i);
+      if (m) named.push(m[0].replace(/^(\w+) /, (w, k) => k.toLowerCase() + ' ').replace(/"([^"]+)"/, '“$1”'));
+      else other.push(s);
+    }
+    const shortish = other.filter(s => s.duration < 10 * 60e9).length;
+    const parts = [...named];
+    if (shortish) parts.push(plural(shortish, 'short title'));
+    if (other.length - shortish) parts.push(plural(other.length - shortish, 'other title'));
+    return `Skipped: ${parts.join('; ')}`;
+  };
+
+  const outcomeLine = j => {
+    const total = ((j.selection && j.selection.picks) || []).length;
+    const done = (j.outputs || []).length;
+    const unit = j.identity && j.identity.kind === 'tv' ? 'episode' : 'title';
+    switch (j.stage) {
+      case 'cancelled': return `Cancelled after ${fmtElapsed(j.elapsed)}${total ? ` · ${done} of ${plural(total, unit)} delivered` : ''}`;
+      case 'failed': return `Failed${j.error ? ': ' + j.error : ''}${total ? ` · ${done} of ${plural(total, unit)} delivered` : ''}`;
+      case 'skipped': return j.error || 'Skipped';
+    }
+    return '';
+  };
+
+  const icon = { done: '✓', failed: '✕', cancelled: '–', skipped: '↷' };
+  const historyCard = j => {
+    const warnings = (j.warnings || []).map(w => `<div class="warning">${esc(w)}</div>`).join('');
+    const outcome = outcomeLine(j);
+    const lines = pickLines(j);
+    const skipped = skippedLine(j);
+    return `<div class="card history ${esc(j.stage)}">
+      <div class="row"><span class="badge ${esc(j.stage)}" title="${esc(j.stage)}">${icon[j.stage] || '•'}</span>
+        <span class="title">${esc(discHeading(j))}</span><span class="spacer"></span>
+        <span class="muted">${esc(fmtWhen(j.finished_at || j.started_at))}${j.elapsed && j.stage === 'done' ? ' · ' + esc(fmtElapsed(j.elapsed)) : ''}</span></div>
+      <div class="sub muted">${esc(matchLine(j))}${j.drive ? ` · ${esc(driveName(j.drive))}` : ''}</div>
+      ${outcome ? `<div class="outcome ${esc(j.stage)}">${esc(outcome)}</div>` : ''}
+      ${lines ? `<ul class="eps">${lines}</ul>` : ''}
+      ${skipped ? `<div class="sub muted">${esc(skipped)}</div>` : ''}
+      ${warnings}
+      <div class="row end"><button onclick="act.detail('${esc(j.id)}')">Details</button></div>
+    </div>`;
+  };
+
   const renderRecent = () => {
-    const rows = history.filter(j => terminal(j.stage)).map(j => `<tr>
-      <td>${esc(fmtWhen(j.finished_at || j.started_at))}</td><td class="drive" title="${esc(j.drive)}">${esc(driveName(j.drive))}</td>
-      <td>${esc(jobTitle(j))}${j.outputs && j.outputs.length ? `<ul class="outputs">${j.outputs.map(o => `<li>${esc(o.path)}</li>`).join('')}</ul>` : ''}${j.error ? `<div class="stage failed">${esc(j.error)}</div>` : ''}</td>
-      <td class="stage ${esc(j.stage)}">${esc(j.stage)}</td><td>${esc(j.elapsed || '')}</td>
-      <td class="actions"><button onclick="act.detail('${esc(j.id)}')">Log</button></td></tr>`);
-    $('#recent tbody').innerHTML = rows.length ? rows.join('') : '<tr><td colspan="6" class="empty">Nothing yet</td></tr>';
+    const cards = history.filter(j => terminal(j.stage)).map(historyCard);
+    $('#recent').innerHTML = cards.length ? cards.join('') : '<div class="card empty">Nothing yet</div>';
   };
 
   const render = s => {

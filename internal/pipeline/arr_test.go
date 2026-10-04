@@ -349,4 +349,12 @@ func TestSonarrImportPartialRejection(t *testing.T) {
 	if got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(got) != 1 {
 		t.Fatalf("sonarr received %d files, want 1", len(got))
 	}
+	// Each file records what Sonarr did with it, for the history page.
+	status := map[string]string{}
+	for _, o := range j.Outputs {
+		status[filepath.Base(o.Path)] = o.Import
+	}
+	if status["Friends - S01E01.mkv"] != "imported" || status["Friends - S01E02.mkv"] != "not imported: Sample" {
+		t.Fatalf("import status = %v", status)
+	}
 }

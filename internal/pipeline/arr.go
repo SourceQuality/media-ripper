@@ -41,6 +41,12 @@ func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 	if err := m.doHandoff(ctx, job, client, s); err != nil {
 		job.logf("%s: %v (files left in staging)", client.Kind, err)
 		job.warn(fmt.Sprintf("%s import failed: %v", client.Kind, err))
+		markImports(job, func(o Output) string {
+			if o.Import != "" {
+				return o.Import
+			}
+			return "not imported: " + err.Error()
+		})
 		return
 	}
 	job.logf("%s import complete", client.Kind)
@@ -68,6 +74,18 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 	if len(res.Rejected) > 0 {
 		job.warn(fmt.Sprintf("%s did not take %s", client.Kind, res.DescribeRejected()))
 	}
+	move := strings.EqualFold(client.Cfg.ImportMode, "move")
+	markImports(job, func(o Output) string {
+		if reasons, ok := res.Rejected[filepath.Base(o.Path)]; ok {
+			return "not imported: " + strings.Join(reasons, "; ")
+		}
+		if move {
+			if _, err := os.Stat(o.Path); err == nil {
+				return "not imported: left in staging"
+			}
+		}
+		return "imported"
+	})
 	// After a move import the staging folders are empty; tidy them up to
 	// the staging root. A copy import leaves the files in place by design.
 	if strings.EqualFold(client.Cfg.ImportMode, "move") {
@@ -209,4 +227,13 @@ func importQuality(kind arr.Kind, s Job) string {
 		return "Bluray-" + res + " Remux"
 	}
 	return "Remux-" + res
+}
+
+// markImports records what the app did with each delivered file.
+func markImports(job *Job, status func(o Output) string) {
+	job.set(func(j *Job) {
+		for i := range j.Outputs {
+			j.Outputs[i].Import = status(j.Outputs[i])
+		}
+	})
 }
