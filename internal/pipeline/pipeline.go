@@ -67,6 +67,7 @@ type runtime struct {
 type Catalog interface {
 	Find(ctx context.Context, kind discdb.Kind, title string, year int, scan []discdb.ScanTitle) (*discdb.Match, error)
 	FindByHash(ctx context.Context, hash string, scan []discdb.ScanTitle) (*discdb.HashMatch, error)
+	ReleaseDiscs(ctx context.Context, kind discdb.Kind, title string, year int, release string) ([]discdb.DiscInfo, error)
 }
 
 // Manager owns one runner per drive.
@@ -197,10 +198,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		m.watchStorage(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		m.backfillBoxSets(ctx)
 	}()
 	seen := map[string]bool{}
 	startRunner := func(p string) {
@@ -790,6 +795,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			}
 		}
 		_ = os.RemoveAll(workDir)
+		m.markBoxSet(snap)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
 		ev := m.event(job, "done")
 		if snap.Stage == StageReview {

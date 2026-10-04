@@ -24,6 +24,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -495,4 +496,39 @@ func (c *Client) FindByHash(ctx context.Context, hash string, scan []ScanTitle) 
 		}
 	}
 	return nil, nil
+}
+
+// DiscInfo names one disc of a catalogued release.
+type DiscInfo struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"` // "Season 1 Disc 3"
+	Slug  string `json:"slug"` // "S01D03"
+}
+
+// ReleaseDiscs lists every disc of a release, in order, for the box-set
+// progress view. The disc files are usually cached by the lookup that
+// matched one of them.
+func (c *Client) ReleaseDiscs(ctx context.Context, kind Kind, title string, year int, release string) ([]DiscInfo, error) {
+	tree, err := c.tree(ctx)
+	if err != nil {
+		return nil, err
+	}
+	prefix := "data/" + string(kind) + "/"
+	var out []DiscInfo
+	for _, e := range tree {
+		if e.Type != "blob" || !strings.HasPrefix(e.Path, prefix) || !discFile.MatchString(path.Base(e.Path)) {
+			continue
+		}
+		rel := path.Dir(e.Path)
+		if path.Base(rel) != release || !folderMatches(path.Base(path.Dir(rel)), title, year) {
+			continue
+		}
+		d, err := c.disc(ctx, e)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, DiscInfo{Index: d.Index, Name: d.Name, Slug: d.Slug})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Index < out[j].Index })
+	return out, nil
 }

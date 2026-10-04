@@ -757,6 +757,11 @@ type fakeCatalog struct {
 	err    error
 	calls  int
 	byHash map[string]*discdb.HashMatch
+	discs  []discdb.DiscInfo
+}
+
+func (f *fakeCatalog) ReleaseDiscs(context.Context, discdb.Kind, string, int, string) ([]discdb.DiscInfo, error) {
+	return f.discs, nil
 }
 
 func (f *fakeCatalog) FindByHash(_ context.Context, hash string, scan []discdb.ScanTitle) (*discdb.HashMatch, error) {
@@ -957,5 +962,57 @@ func TestHashConfirmsTitleMatch(t *testing.T) {
 	}
 	if needsReview(j, e.m.rt.Load()) {
 		t.Fatal("a hash-verified disc should not wait for review")
+	}
+}
+
+// A catalogued disc counts towards its release; the view lists the discs
+// still missing.
+func TestBoxSetProgress(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, Season: 1, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "sonarr"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	e.m.deps.Catalog = &fakeCatalog{
+		match: &discdb.Match{Release: "the-complete-series-dvd-2004", Disc: discdb.Disc{Index: 2, Name: "Season 1 Disc 2", Slug: "S01D02"}, Matched: 2, Compared: 2, ByID: map[int]discdb.Title{
+			1: {Item: &discdb.Item{Type: "Episode", Season: 1, Episode: 5}}, 2: {Item: &discdb.Item{Type: "Episode", Season: 1, Episode: 6}}}},
+		discs: []discdb.DiscInfo{{Index: 1, Name: "Season 1 Disc 1", Slug: "S01D01"}, {Index: 2, Name: "Season 1 Disc 2", Slug: "S01D02"}, {Index: 3, Name: "Season 2 Disc 1", Slug: "S02D01"}},
+	}
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-2", "FRIENDS_S1_D2")
+	if j := e.waitDone(t); j.Stage != StageDone {
+		t.Fatalf("stage = %s", j.Stage)
+	}
+	sets := e.m.BoxSets(ctx)
+	if len(sets) != 1 {
+		t.Fatalf("sets = %+v", sets)
+	}
+	b := sets[0]
+	if b.Title != "Friends" || b.ReleaseName != "The Complete Series DVD 2004" || b.Ripped != 1 || b.Total != 3 || len(b.Groups) != 2 {
+		t.Fatalf("box set = %+v", b)
+	}
+	s1 := b.Groups[0]
+	if s1.Name != "Season 1" || len(s1.Discs) != 2 || s1.Discs[0].Ripped || !s1.Discs[1].Ripped || s1.Discs[1].Short != "D2" {
+		t.Fatalf("season 1 = %+v", s1)
+	}
+}
+
+func TestBoxSetBackfillFromHistory(t *testing.T) {
+	e := setup(t, tvInfo, nil)
+	e.m.deps.Catalog = &fakeCatalog{match: &discdb.Match{Release: "the-complete-series-blu-ray-2021", Disc: discdb.Disc{Index: 4, Name: "Season 1 Disc 4", Slug: "S01D04"}, Matched: 2, Compared: 2}}
+	e.m.SetConfig(e.cfg)
+	_ = e.st.AppendHistory(map[string]any{"id": "old-1", "stage": "done", "finished_at": time.Now(),
+		"identity":  map[string]any{"kind": "tv", "title": "The Twilight Zone", "year": 1959, "confidence": 1, "source": "sonarr"},
+		"selection": map[string]any{"picks": []any{map[string]any{"title": map[string]any{"id": 6, "source_file": "00000.mpls", "size_bytes": 1}, "reason": "TheDiscDB: S01E23"}}}})
+	_ = e.st.AppendHistory(map[string]any{"id": "old-2", "stage": "done", "identity": map[string]any{"kind": "tv", "title": "Friends", "confidence": 1},
+		"selection": map[string]any{"picks": []any{map[string]any{"title": map[string]any{"id": 1}, "reason": "22:10 fits episode length"}}}})
+	e.m.backfillBoxSets(context.Background())
+	sets := e.st.BoxSets()
+	if len(sets) != 1 || sets[0].Title != "The Twilight Zone" || sets[0].Ripped["S01D04"].JobID != "old-1" {
+		t.Fatalf("backfilled = %+v", sets)
+	}
+	e.m.backfillBoxSets(context.Background()) // once only
+	if len(e.st.BoxSets()) != 1 {
+		t.Fatal("ran twice")
 	}
 }

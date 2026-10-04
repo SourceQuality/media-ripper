@@ -92,6 +92,9 @@ type Job struct {
 	Catalog         string `json:"catalog,omitempty"`
 	CatalogMatched  int    `json:"catalog_matched,omitempty"`
 	CatalogCompared int    `json:"catalog_compared,omitempty"`
+	// CatalogDisc is the catalogue release and disc this disc matched, for
+	// box-set progress. It is kept when a person corrects the titles.
+	CatalogDisc *CatalogDisc `json:"catalog_disc,omitempty"`
 	// ContentHash is TheDiscDB's hash of the disc's video file sizes;
 	// HashMatched says it equals the matched catalogue disc's.
 	ContentHash string `json:"content_hash,omitempty"`
@@ -108,6 +111,17 @@ type Job struct {
 	// the job log so the stage keeps showing the rip.
 	ripping bool
 	rt      *runtime
+}
+
+// CatalogDisc identifies a disc within a catalogued release.
+type CatalogDisc struct {
+	Kind    string `json:"kind"` // movie | series
+	Title   string `json:"title"`
+	Year    int    `json:"year,omitempty"`
+	Release string `json:"release"`
+	Index   int    `json:"index"`
+	Name    string `json:"name"`
+	Slug    string `json:"slug"`
 }
 
 // Activity is one data-moving step in progress, with its throughput.
@@ -252,7 +266,7 @@ func (j *Job) Snapshot() Job {
 		ID: j.ID, Drive: j.Drive, Fingerprint: j.Fingerprint, Label: j.Label, DiscType: j.DiscType,
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
 		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun,
-		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog,
+		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog, CatalogDisc: j.CatalogDisc,
 		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared, ContentHash: j.ContentHash, HashMatched: j.HashMatched,
 	}
 	c.Warnings = append([]string(nil), j.Warnings...)

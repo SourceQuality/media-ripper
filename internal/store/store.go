@@ -25,6 +25,26 @@ type Store struct {
 	discs   map[string]DiscRecord
 	reviews map[string]json.RawMessage
 	matches map[string]DiscMatch
+	sets    map[string]BoxSet
+}
+
+// BoxSet tracks which discs of one catalogued release have been ripped.
+type BoxSet struct {
+	Kind    string `json:"kind"` // movie | series
+	Title   string `json:"title"`
+	Year    int    `json:"year,omitempty"`
+	Release string `json:"release"` // catalogue release slug
+	// Ripped maps a disc's catalogue slug ("S01D03") to when it was done.
+	Ripped    map[string]RippedDisc `json:"ripped"`
+	UpdatedAt time.Time             `json:"updated_at"`
+}
+
+// RippedDisc is one disc of a box set that went through.
+type RippedDisc struct {
+	Index int       `json:"index"`
+	Name  string    `json:"name"`
+	JobID string    `json:"job_id"`
+	At    time.Time `json:"at"`
 }
 
 // DiscMatch is what a person confirmed a disc to be. It is used instead of
@@ -66,7 +86,7 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, series: map[string]SeriesProgress{}, discs: map[string]DiscRecord{}, reviews: map[string]json.RawMessage{}, matches: map[string]DiscMatch{}}
+	s := &Store{dir: dir, series: map[string]SeriesProgress{}, discs: map[string]DiscRecord{}, reviews: map[string]json.RawMessage{}, matches: map[string]DiscMatch{}, sets: map[string]BoxSet{}}
 	if err := s.loadJSON("series.json", &s.series); err != nil {
 		return nil, err
 	}
@@ -77,6 +97,9 @@ func Open(dir string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.loadJSON("matches.json", &s.matches); err != nil {
+		return nil, err
+	}
+	if err := s.loadJSON("boxsets.json", &s.sets); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -297,4 +320,32 @@ func (s *Store) DiscMatch(fp string) (DiscMatch, bool) {
 	defer s.mu.Unlock()
 	m, ok := s.matches[fp]
 	return m, ok
+}
+
+// MarkBoxSetDisc records that a disc of a catalogued release was ripped.
+func (s *Store) MarkBoxSetDisc(set BoxSet, slug string, d RippedDisc) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := strings.ToLower(set.Kind + "|" + set.Title + "|" + fmt.Sprint(set.Year) + "|" + set.Release)
+	cur, ok := s.sets[key]
+	if !ok {
+		cur = set
+		cur.Ripped = map[string]RippedDisc{}
+	}
+	cur.Ripped[slug] = d
+	cur.UpdatedAt = time.Now()
+	s.sets[key] = cur
+	return s.saveJSON("boxsets.json", s.sets)
+}
+
+// BoxSets lists releases with ripped discs, most recently touched first.
+func (s *Store) BoxSets() []BoxSet {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]BoxSet, 0, len(s.sets))
+	for _, b := range s.sets {
+		out = append(out, b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out
 }
