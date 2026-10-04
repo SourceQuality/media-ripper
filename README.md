@@ -85,12 +85,20 @@ the Docker image includes English.
 git clone https://github.com/sourcequality/media-ripper
 cd media-ripper/deploy
 # edit docker-compose.yml: library path, /dev/sr0 and /dev/sg0 for your drive
-MR_TMDB_API_KEY=... MR_MAKEMKV_KEY=... docker compose up -d --build
+MAKEMKV_ACCEPT_EULA=yes MR_TMDB_API_KEY=... MR_MAKEMKV_KEY=... docker compose up -d --build
 ```
 
 The image builds MakeMKV from source (its license does not allow shipping
 the binary), so the first build takes a few minutes. On first start a
 `config/config.yaml` is created; edit it and `docker compose restart`.
+
+### Release binaries
+
+The binaries on the GitHub releases page are media-ripper only. MakeMKV is
+a separate program you install yourself (makemkv.com, or the installer and
+Docker image below, which build it on your machine): its licence does not
+allow shipping it. `media-ripper check` reports the MakeMKV version and
+fails when the beta has expired or the stored key is invalid.
 
 ### Debian / Ubuntu service
 
@@ -98,7 +106,8 @@ the binary), so the first build takes a few minutes. On first start a
 git clone https://github.com/sourcequality/media-ripper
 cd media-ripper
 make build
-sudo MAKEMKV_VERSION=1.17.9 sh deploy/install-debian.sh
+sudo sh deploy/install-debian.sh     # asks you to accept MakeMKV's licence
+# or, after reading it: sudo MAKEMKV_ACCEPT_EULA=yes sh deploy/install-debian.sh
 sudo nano /etc/media-ripper/config.yaml
 sudo media-ripper check
 sudo systemctl enable --now media-ripper

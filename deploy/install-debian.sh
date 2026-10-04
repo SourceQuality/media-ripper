@@ -2,13 +2,18 @@
 # Installs media-ripper as a systemd service on Debian 12 / Ubuntu 22.04+
 # including MakeMKV built from source. Run as root on the ripping machine.
 #
-#   MAKEMKV_VERSION=1.17.9 sh deploy/install-debian.sh
+#   MAKEMKV_ACCEPT_EULA=yes sh deploy/install-debian.sh
+#
+# MakeMKV's licence (EULA) must be accepted to build it. Run interactively
+# to read it and answer the prompt, or set MAKEMKV_ACCEPT_EULA=yes once you
+# have read it (makemkv-bin-<version>/src/eula_en_linux.txt). Pin another
+# MakeMKV release with MAKEMKV_VERSION=x.y.z; betas expire, so stay current.
 #
 # Afterwards edit /etc/media-ripper/config.yaml (output path, TMDB key,
 # MakeMKV key) and run: systemctl enable --now media-ripper
 set -eu
 
-MAKEMKV_VERSION="${MAKEMKV_VERSION:-1.17.9}"
+MAKEMKV_VERSION="${MAKEMKV_VERSION:-2.0.0}"
 PREFIX="${PREFIX:-/usr/local}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 
@@ -32,7 +37,16 @@ if ! command -v makemkvcon >/dev/null 2>&1 || ! makemkvcon -r --noscan info disc
   tar xzf "makemkv-oss-${MAKEMKV_VERSION}.tar.gz"
   tar xzf "makemkv-bin-${MAKEMKV_VERSION}.tar.gz"
   (cd "makemkv-oss-${MAKEMKV_VERSION}" && ./configure --disable-gui --prefix="$PREFIX" && make -j"$(nproc)" && make install)
-  (cd "makemkv-bin-${MAKEMKV_VERSION}" && mkdir -p tmp && echo accepted > tmp/eula_accepted && make PREFIX="$PREFIX" && make install PREFIX="$PREFIX")
+  if [ "${MAKEMKV_ACCEPT_EULA:-}" = "yes" ]; then
+    mkdir -p "makemkv-bin-${MAKEMKV_VERSION}/tmp"
+    echo accepted > "makemkv-bin-${MAKEMKV_VERSION}/tmp/eula_accepted"
+  elif [ ! -t 0 ]; then
+    echo "MakeMKV's licence must be accepted. Read $tmp/makemkv-bin-${MAKEMKV_VERSION}/src/eula_en_linux.txt," >&2
+    echo "then rerun with MAKEMKV_ACCEPT_EULA=yes (or run this script in a terminal to be asked)." >&2
+    exit 1
+  fi
+  # Without MAKEMKV_ACCEPT_EULA, make shows the licence and asks.
+  (cd "makemkv-bin-${MAKEMKV_VERSION}" && make PREFIX="$PREFIX" && make install PREFIX="$PREFIX")
   ldconfig
   cd /
   rm -rf "$tmp"

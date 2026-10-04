@@ -1,6 +1,9 @@
 package makemkv
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -142,4 +145,32 @@ func readFile(t *testing.T, p string) (string, error) {
 	t.Helper()
 	b, err := osReadFile(p)
 	return string(b), err
+}
+
+func TestProbe(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, out string) *Client {
+		bin := filepath.Join(dir, name)
+		script := "#!/bin/sh\ncat <<'OUT'\n" + out + "\nOUT\nexit 1\n"
+		if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return &Client{Binary: bin}
+	}
+	ok := write("ok", `MSG:1005,0,1,"MakeMKV v2.0.0 linux(x64-release) started","%1 started","MakeMKV v2.0.0 linux(x64-release)"
+MSG:5010,0,0,"Failed to open disc","Failed to open disc"`)
+	if v, err := ok.Probe(context.Background()); err != nil || v != "2.0.0" {
+		t.Fatalf("ok: %q %v", v, err)
+	}
+	// What a test's dummy key in ~/.MakeMKV did to the real install.
+	expired := write("expired", `MSG:1005,0,1,"MakeMKV v1.18.3 linux(x64-release) started","%1 started","MakeMKV v1.18.3 linux(x64-release)"
+MSG:5020,516,0,"The stored activation key is invalid.","The stored activation key is invalid."
+MSG:5021,131332,1,"This application version is too old.","This application version is too old.","http://www.makemkv.com/"`)
+	v, err := expired.Probe(context.Background())
+	if v != "1.18.3" || err == nil || !strings.Contains(err.Error(), "too old") || !strings.Contains(err.Error(), "makemkv.key") {
+		t.Fatalf("expired: %q %v", v, err)
+	}
+	if _, err := (&Client{Binary: filepath.Join(dir, "missing")}).Probe(context.Background()); err == nil {
+		t.Fatal("missing binary should fail")
+	}
 }

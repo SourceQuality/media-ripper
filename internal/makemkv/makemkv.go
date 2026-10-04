@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -383,4 +384,35 @@ func SelectionString(languages []string) string {
 		langs = append(langs, "lang="+l)
 	}
 	return "-sel:all,+sel:video,+sel:(" + strings.Join(langs, "|") + "|nolang),-sel:mvcvideo,=100:all,-10:favlang"
+}
+
+var versionRe = regexp.MustCompile(`v(\d+(?:\.\d+)+)`)
+
+// Probe starts makemkvcon without touching a drive and reports its version.
+// A beta that has expired or an invalid stored key is an error: MakeMKV
+// would refuse every disc ("This application version is too old").
+func (c *Client) Probe(ctx context.Context) (string, error) {
+	var version string
+	var problems []string
+	_, err := c.run(ctx, []string{"-r", "--noscan", "info", "disc:9999"}, func(key string, f []string) {
+		if key != "MSG" || len(f) < 4 {
+			return
+		}
+		switch f[0] {
+		case "1005": // "MakeMKV v2.0.0 linux(x64-release) started"
+			if m := versionRe.FindStringSubmatch(f[3]); m != nil {
+				version = m[1]
+			}
+		case "5020", "5021": // invalid stored key; version too old / expired
+			problems = append(problems, strings.TrimSpace(f[3]))
+		}
+	})
+	if version == "" && err != nil {
+		return "", fmt.Errorf("run %s: %w", c.Binary, err)
+	}
+	if len(problems) > 0 {
+		return version, fmt.Errorf("MakeMKV %s will not rip: %s Set makemkv.key to your registration key or the current beta key, or update MakeMKV", version, strings.Join(problems, " "))
+	}
+	// "disc:9999" does not exist, so a non-zero exit is expected here.
+	return version, nil
 }

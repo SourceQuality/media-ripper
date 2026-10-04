@@ -4,7 +4,11 @@
 # MakeMKV is built from source because its license forbids redistribution of
 # the binary; pin the version with --build-arg MAKEMKV_VERSION=x.y.z.
 
-ARG MAKEMKV_VERSION=1.17.9
+ARG MAKEMKV_VERSION=2.0.0
+# Building the image accepts MakeMKV's licence on your behalf, so it has to
+# be said explicitly: --build-arg MAKEMKV_ACCEPT_EULA=yes after reading it
+# (https://www.makemkv.com/, or makemkv-bin-*/src/eula_en_linux.txt).
+ARG MAKEMKV_ACCEPT_EULA=
 
 # ---- Go binary -------------------------------------------------------------
 FROM golang:1.24-bookworm AS build
@@ -18,6 +22,10 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w -X main.version=${VERSION}"
 # ---- MakeMKV ---------------------------------------------------------------
 FROM debian:bookworm-slim AS makemkv
 ARG MAKEMKV_VERSION
+ARG MAKEMKV_ACCEPT_EULA
+RUN if [ "$MAKEMKV_ACCEPT_EULA" != "yes" ]; then \
+      echo "Set --build-arg MAKEMKV_ACCEPT_EULA=yes (MAKEMKV_ACCEPT_EULA=yes for docker compose) to accept MakeMKV's licence." >&2; exit 1; \
+    fi
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config ca-certificates wget \
