@@ -131,6 +131,7 @@ func TestButtonsOnBotMessages(t *testing.T) {
 	n.Send(context.Background(), Event{Type: "started", JobID: "j2", Title: "x"})
 	n.Send(context.Background(), Event{Type: "failed", Drive: "/dev/sr0", Title: "x"})
 	n.Send(context.Background(), Event{Type: "done", JobID: "j3", Title: "x"})
+	n.Send(context.Background(), Event{Type: "done", JobID: "j4", Title: "x", ImportFailed: true})
 	ids := func(i int) []string {
 		var out []string
 		rows, _ := got.body[i]["components"].([]any)
@@ -152,6 +153,9 @@ func TestButtonsOnBotMessages(t *testing.T) {
 	}
 	if len(ids(3)) != 0 {
 		t.Fatal("done messages have no buttons")
+	}
+	if g := strings.Join(ids(4), ","); g != "mr:retry:j4" {
+		t.Fatalf("failed import buttons = %s", g)
 	}
 	// A webhook message cannot carry working buttons.
 	hook, hookGot := discordServer(t, 204)

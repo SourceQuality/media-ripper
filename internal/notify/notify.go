@@ -37,14 +37,17 @@ type Event struct {
 	// Summary is the overall state for progress updates ("Ripping 3 of 8").
 	Summary string `json:"summary,omitempty"`
 	// Final marks the last progress update of a job: buttons go away.
-	Final    bool      `json:"final,omitempty"`
-	Warnings []string  `json:"warnings,omitempty"`
-	Label    string    `json:"label,omitempty"`
-	Title    string    `json:"title,omitempty"`
-	Outputs  []string  `json:"outputs,omitempty"`
-	Error    string    `json:"error,omitempty"`
-	Elapsed  string    `json:"elapsed,omitempty"`
-	Time     time.Time `json:"time"`
+	Final bool `json:"final,omitempty"`
+	// ImportFailed marks a finished disc with files Radarr/Sonarr did not
+	// import: its message offers a retry.
+	ImportFailed bool      `json:"import_failed,omitempty"`
+	Warnings     []string  `json:"warnings,omitempty"`
+	Label        string    `json:"label,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Outputs      []string  `json:"outputs,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	Elapsed      string    `json:"elapsed,omitempty"`
+	Time         time.Time `json:"time"`
 }
 
 // Send delivers the event; failures are logged, never fatal.

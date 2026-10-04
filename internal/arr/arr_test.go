@@ -58,7 +58,7 @@ func fakeRadarr(t *testing.T) (*httptest.Server, *[]string) {
 				Files      []map[string]any `json:"files"`
 			}
 			_ = json.NewDecoder(r.Body).Decode(&body)
-			if body.Name != "ManualImport" || body.ImportMode != "move" || len(body.Files) != 1 {
+			if body.Name != "ManualImport" || body.ImportMode != "copy" || len(body.Files) != 1 {
 				t.Errorf("command body: %+v", body)
 			} else {
 				f := body.Files[0]
@@ -69,6 +69,11 @@ func fakeRadarr(t *testing.T) (*httptest.Server, *[]string) {
 				}
 			}
 			_, _ = w.Write([]byte(`{"id":55,"status":"queued"}`))
+		case r.URL.Path == "/api/v3/moviefile":
+			if r.URL.Query().Get("movieId") != "7" {
+				t.Errorf("moviefile query = %v", r.URL.Query())
+			}
+			_, _ = w.Write([]byte(`[{"id":1,"movieId":7,"size":1234}]`))
 		case r.URL.Path == "/api/v3/command/55":
 			polls++
 			st := "started"
@@ -111,8 +116,11 @@ func TestRadarrFlow(t *testing.T) {
 		t.Fatalf("unmapped path: %s", p)
 	}
 	res, err := c.Import(ctx, "/mnt/media/_incoming/The Matrix (1999)", ImportOptions{Wait: time.Minute, Quality: "Remux-1080p"})
-	if err != nil || res.Imported != 1 || len(res.Rejected) != 1 || res.Rejected["sample.mkv"][0] != "Sample" {
+	if err != nil || res.Imported != 1 || res.ItemID != 7 || len(res.Rejected) != 1 || res.Rejected["sample.mkv"][0] != "Sample" {
 		t.Fatalf("import: %v %+v", err, res)
+	}
+	if held, err := c.Holds(ctx, res.ItemID); err != nil || !held[1234] || len(held) != 1 {
+		t.Fatalf("holds: %v %v", held, err)
 	}
 	joined := strings.Join(*calls, "\n")
 	if !strings.Contains(joined, "GET /api/v3/command/55") {

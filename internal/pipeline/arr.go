@@ -30,7 +30,8 @@ func (rt *runtime) arrFor(id *metadata.Identity) *arr.Client {
 
 // arrHandoff makes sure the title exists in Radarr/Sonarr and asks it to
 // import the delivered files. Failures leave the files in staging and are
-// recorded on the job as warnings; the rip itself has succeeded.
+// recorded on the job as warnings; the rip itself has succeeded. An import
+// cut short by shutdown is marked pending and runs again at the next start.
 func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 	s := job.Snapshot()
 	client := job.rt.arrFor(s.Identity)
@@ -38,11 +39,28 @@ func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 		return
 	}
 	job.setStage(StageHandoff, "importing into "+string(client.Kind))
-	if err := m.doHandoff(ctx, job, client, s); err != nil {
+	// Marked before the import starts, so even a crash leaves it to retry.
+	if err := m.deps.Store.SetImportPending(job.ID, true); err != nil {
+		m.log.Warn("mark import pending", "job", job.ID, "err", err)
+	}
+	err := m.doHandoff(ctx, job, client, s)
+	if err != nil && ctx.Err() != nil {
+		job.logf("%s import interrupted; it runs again when media-ripper starts", client.Kind)
+		job.warn(fmt.Sprintf("%s import interrupted; it runs again when media-ripper starts", client.Kind))
+		markImports(job, func(o Output) string {
+			if o.Import == "imported" {
+				return o.Import
+			}
+			return "not imported: interrupted"
+		})
+		return
+	}
+	_ = m.deps.Store.SetImportPending(job.ID, false)
+	if err != nil {
 		job.logf("%s: %v (files left in staging)", client.Kind, err)
 		job.warn(fmt.Sprintf("%s import failed: %v", client.Kind, err))
 		markImports(job, func(o Output) string {
-			if o.Import != "" {
+			if o.Import == "imported" {
 				return o.Import
 			}
 			return "not imported: " + err.Error()
@@ -66,53 +84,83 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 	if dir == "" {
 		return errors.New("no delivered files")
 	}
-	res, err := client.Import(ctx, dir, arr.ImportOptions{Wait: cfg.Arr.ImportTimeout.D(), Quality: importQuality(client.Kind, s)})
+	// Files the app already holds (an earlier import that was reported
+	// as failed, or one done by hand) need no new import.
+	already := map[int64]bool{}
+	if item.ID != 0 {
+		if sizes, err := client.Holds(ctx, item.ID); err == nil {
+			already = sizes
+		}
+	}
+	allThere := true
+	for _, o := range s.Outputs {
+		allThere = allThere && already[o.Size]
+	}
+	res := arr.ImportResult{Rejected: map[string][]string{}, ItemID: item.ID}
+	if allThere {
+		job.logf("%s already has every file", client.Kind)
+	} else {
+		if res, err = client.Import(ctx, dir, arr.ImportOptions{Wait: cfg.Arr.ImportTimeout.D(), Quality: importQuality(client.Kind, s)}); err != nil {
+			return err
+		}
+		job.logf("%s was given %d file(s)", client.Kind, res.Imported)
+		// A file it already holds is rejected as "not an upgrade"; that
+		// one is in, not left out.
+		for _, o := range s.Outputs {
+			if already[o.Size] {
+				delete(res.Rejected, filepath.Base(o.Path))
+			}
+		}
+		if len(res.Rejected) > 0 {
+			job.warn(fmt.Sprintf("%s did not take %s", client.Kind, res.DescribeRejected()))
+		}
+	}
+	itemID := res.ItemID
+	if itemID == 0 {
+		itemID = item.ID
+	}
+	// The command can report success for files it then failed to take
+	// (seen when it could not delete them from staging), so ask the app
+	// what it holds now.
+	var expect []Output
+	for _, o := range s.Outputs {
+		if _, rejected := res.Rejected[filepath.Base(o.Path)]; !rejected {
+			expect = append(expect, o)
+		}
+	}
+	held, err := confirmHeld(ctx, client, itemID, expect)
 	if err != nil {
 		return err
 	}
-	job.logf("%s imported %d file(s)", client.Kind, res.Imported)
-	if len(res.Rejected) > 0 {
-		job.warn(fmt.Sprintf("%s did not take %s", client.Kind, res.DescribeRejected()))
-	}
 	move := strings.EqualFold(client.Cfg.ImportMode, "move")
-	// The command reports "completed" even when it matched nothing, so
-	// check what actually left staging after a move import.
-	left := map[string]bool{}
-	if move {
-		// Rejected files stay in staging by design; wait only for the rest.
-		var taken []Output
-		for _, o := range s.Outputs {
-			if _, rejected := res.Rejected[filepath.Base(o.Path)]; !rejected {
-				taken = append(taken, o)
+	var missing []string
+	for _, o := range expect {
+		if !held[o.Path] {
+			missing = append(missing, filepath.Base(o.Path))
+		} else if move {
+			// The app copied it; finish the move here, as the owner of
+			// the staged file.
+			if err := os.Remove(o.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				job.logf("remove %s from staging: %v", o.Path, err)
 			}
-		}
-		for _, name := range stillStaged(ctx, taken) {
-			left[name] = true
 		}
 	}
 	markImports(job, func(o Output) string {
 		if reasons, ok := res.Rejected[filepath.Base(o.Path)]; ok {
 			return "not imported: " + strings.Join(reasons, "; ")
 		}
-		if left[filepath.Base(o.Path)] {
-			return "not imported: left in staging"
+		if !held[o.Path] {
+			return fmt.Sprintf("not imported: %s did not keep it (see its log)", client.Kind)
 		}
 		return "imported"
 	})
-	// After a move import the staging folders are empty; tidy them up to
-	// the staging root. A copy import leaves the files in place by design.
 	if move {
-		if len(left) > 0 {
-			names := make([]string, 0, len(left))
-			for _, o := range s.Outputs {
-				if left[filepath.Base(o.Path)] {
-					names = append(names, filepath.Base(o.Path))
-				}
-			}
-			return fmt.Errorf("imported %d of %d files; not taken: %s", len(s.Outputs)-len(left), len(s.Outputs), strings.Join(names, ", "))
-		}
-		staging := filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir)
-		removeEmptyUpTo(dir, staging)
+		// Tidy the emptied staging folders up to the staging root. A copy
+		// import leaves the files in place by design.
+		removeEmptyUpTo(dir, filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("imported %d of %d files; not taken: %s", len(s.Outputs)-len(res.Rejected)-len(missing), len(s.Outputs), strings.Join(missing, ", "))
 	}
 	return nil
 }
@@ -249,34 +297,41 @@ func markImports(job *Job, status func(o Output) string) {
 	})
 }
 
-// stagedWait is how long a moved file may still appear in staging. On an
-// NFS mount the client caches what it last saw for up to 60 seconds, so a
-// file the app has already moved on the server can look present here.
+// heldWait is how long an imported file may take to show up in the app's
+// file list after its command completed.
 var (
-	stagedWait = 75 * time.Second
-	stagedPoll = 2 * time.Second
+	heldWait = 75 * time.Second
+	heldPoll = 2 * time.Second
 )
 
-// stillStaged returns the outputs still in staging once the app has had
-// time to move them. Opening a file (rather than stat) makes an NFS client
-// revalidate it with the server.
-func stillStaged(ctx context.Context, outs []Output) []string {
-	deadline := time.Now().Add(stagedWait)
+// confirmHeld reports, by path, which outputs the app now holds: a file of
+// the same size among the series' or movie's files.
+func confirmHeld(ctx context.Context, client *arr.Client, itemID int, outs []Output) (map[string]bool, error) {
+	held := map[string]bool{}
+	if len(outs) == 0 {
+		return held, nil
+	}
+	if itemID == 0 {
+		return nil, fmt.Errorf("%s did not say which title the files belong to", client.Kind)
+	}
+	deadline := time.Now().Add(heldWait)
 	for {
-		var left []string
-		for _, o := range outs {
-			if f, err := os.Open(o.Path); err == nil {
-				f.Close()
-				left = append(left, filepath.Base(o.Path))
-			}
+		sizes, err := client.Holds(ctx, itemID)
+		if err != nil {
+			return nil, err
 		}
-		if len(left) == 0 || time.Now().After(deadline) {
-			return left
+		all := true
+		for _, o := range outs {
+			held[o.Path] = sizes[o.Size]
+			all = all && held[o.Path]
+		}
+		if all || time.Now().After(deadline) {
+			return held, nil
 		}
 		select {
 		case <-ctx.Done():
-			return left
-		case <-time.After(stagedPoll):
+			return nil, ctx.Err()
+		case <-time.After(heldPoll):
 		}
 	}
 }

@@ -7,6 +7,10 @@
     eject: d => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/eject`),
     rescan: d => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/rescan`),
     cancel: id => post(`/api/jobs/${encodeURIComponent(id)}/cancel`),
+    retry: (id, btn) => {
+      btn.disabled = true; btn.textContent = 'Importing…';
+      post(`/api/jobs/${encodeURIComponent(id)}/retry-import`).finally(() => { btn.disabled = false; btn.textContent = 'Retry import'; });
+    },
     detail: id => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => {
       $('#detail-title').textContent = jobTitle(j);
       $('#detail-log').textContent = (j.log || []).length
@@ -202,6 +206,8 @@
     return '';
   };
 
+  // Files Radarr/Sonarr did not take are still in staging: offer a retry.
+  const importFailed = j => j.stage === 'done' && (j.outputs || []).some(o => (o.import || '').startsWith('not imported'));
   const icon = { done: '✓', failed: '✕', cancelled: '–', skipped: '↷', review: '?' };
   const historyCard = j => {
     const warnings = (j.warnings || []).map(w => `<div class="warning">${esc(w)}</div>`).join('');
@@ -218,7 +224,7 @@
       ${skipped ? `<div class="sub muted">${esc(skipped)}</div>` : ''}
       ${j.backup ? `<div class="sub muted">Full-disc backup: ${esc(j.backup.path)} (${esc(fmtBytes(j.backup.size))})</div>` : ''}
       ${warnings}
-      <div class="row end"><button onclick="act.detail('${esc(j.id)}')">Details</button></div>
+      <div class="row end">${importFailed(j) ? `<button class="primary" onclick="act.retry('${esc(j.id)}', this)">Retry import</button>` : ''}<button onclick="act.detail('${esc(j.id)}')">Details</button></div>
     </div>`;
   };
 

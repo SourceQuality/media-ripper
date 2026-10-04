@@ -351,10 +351,11 @@ type ImportOptions struct {
 	Quality string
 }
 
-// ImportResult says what the app took and why it left the rest.
+// ImportResult says what the app was given and why it left the rest.
 type ImportResult struct {
-	Imported int
+	Imported int                 // files sent to the app
 	Rejected map[string][]string // file name -> reasons
+	ItemID   int                 // the series or movie they were matched to
 }
 
 // Import has the app import every file under dir. It asks the app to
@@ -363,6 +364,11 @@ type ImportResult struct {
 // (DownloadedEpisodesScan) was tried first and, on Sonarr 4, reported
 // "Failed to import" for files the preview matched cleanly, with no
 // reason logged at the default level.
+//
+// The app always copies: a move needs it to delete from staging, which it
+// often cannot (another user, another machine), and then it rolls the
+// import back while still reporting success. The caller checks what the
+// app kept (Holds) and tidies staging itself.
 func (c *Client) Import(ctx context.Context, dir string, opts ImportOptions) (ImportResult, error) {
 	res := ImportResult{Rejected: map[string][]string{}}
 	var preview []map[string]any
@@ -401,6 +407,9 @@ func (c *Client) Import(ctx context.Context, dir string, opts ImportOptions) (Im
 				continue
 			}
 			f["seriesId"], f["episodeIds"], f["releaseType"] = series["id"], eps, p["releaseType"]
+			if res.ItemID == 0 {
+				res.ItemID = int(num(series["id"]))
+			}
 		} else {
 			movie, _ := p["movie"].(map[string]any)
 			if movie == nil {
@@ -408,6 +417,9 @@ func (c *Client) Import(ctx context.Context, dir string, opts ImportOptions) (Im
 				continue
 			}
 			f["movieId"] = movie["id"]
+			if res.ItemID == 0 {
+				res.ItemID = int(num(movie["id"]))
+			}
 		}
 		files = append(files, f)
 	}
@@ -417,11 +429,7 @@ func (c *Client) Import(ctx context.Context, dir string, opts ImportOptions) (Im
 		}
 		return res, fmt.Errorf("%s matched none of the files: %s", c.Kind, describeRejected(res.Rejected))
 	}
-	mode := "move"
-	if strings.EqualFold(c.Cfg.ImportMode, "copy") {
-		mode = "copy"
-	}
-	cmd, err := c.runCommand(ctx, map[string]any{"name": "ManualImport", "files": files, "importMode": mode}, opts.Wait)
+	cmd, err := c.runCommand(ctx, map[string]any{"name": "ManualImport", "files": files, "importMode": "copy"}, opts.Wait)
 	if err != nil {
 		return res, err
 	}
@@ -430,6 +438,27 @@ func (c *Client) Import(ctx context.Context, dir string, opts ImportOptions) (Im
 	}
 	res.Imported = len(files)
 	return res, nil
+}
+
+// Holds returns the sizes of the files the app has for a series or movie,
+// which is how an import is confirmed: a ManualImport can report success
+// for files it then failed to take.
+func (c *Client) Holds(ctx context.Context, itemID int) (map[int64]bool, error) {
+	path, q := "/moviefile", url.Values{"movieId": {strconv.Itoa(itemID)}}
+	if c.Kind == Sonarr {
+		path, q = "/episodefile", url.Values{"seriesId": {strconv.Itoa(itemID)}}
+	}
+	var files []struct {
+		Size int64 `json:"size"`
+	}
+	if err := c.do(ctx, http.MethodGet, path, q, nil, &files); err != nil {
+		return nil, err
+	}
+	out := make(map[int64]bool, len(files))
+	for _, f := range files {
+		out[f.Size] = true
+	}
+	return out, nil
 }
 
 type command struct {

@@ -265,6 +265,8 @@ func components(ev Event) []any {
 	switch {
 	case ev.Type == "review" && ev.JobID != "":
 		row = []any{button(3, "Approve & import", "mr:approve:"+ev.JobID), button(4, "Discard", "mr:discard:"+ev.JobID)}
+	case ev.Type == "done" && ev.ImportFailed && ev.JobID != "":
+		row = []any{button(1, "Retry import", "mr:retry:"+ev.JobID)}
 	case ev.Type == "started" && ev.JobID != "":
 		row = []any{button(2, "Cancel", "mr:cancel:"+ev.JobID)}
 	case ev.Type == "failed" && ev.Drive != "":

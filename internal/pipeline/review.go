@@ -253,7 +253,7 @@ func (m *Manager) restage(job *Job) error {
 			if _, err := os.Stat(dest); err == nil {
 				return fmt.Errorf("%s already exists", dest)
 			}
-			if err := os.MkdirAll(filepath.Dir(dest), os.FileMode(cfg.Output.DirMode)); err != nil {
+			if err := mkdirAll(filepath.Dir(dest), os.FileMode(cfg.Output.DirMode)); err != nil {
 				return err
 			}
 			if err := os.Rename(o.Path, dest); err != nil {
@@ -358,6 +358,15 @@ func (m *Manager) DiscordAction(ctx context.Context, customID string) string {
 			return fmt.Sprintf("Imported %d of %d; %s", imported, len(j.Outputs), strings.Join(j.Warnings, "; "))
 		}
 		return fmt.Sprintf("✅ Approved and imported %d title(s)", imported)
+	case "retry":
+		j, err := m.RetryImport(ctx, arg)
+		if err != nil {
+			return "Could not retry: " + err.Error()
+		}
+		if importFailed(j) {
+			return "Import still failing: " + strings.Join(j.Warnings, "; ")
+		}
+		return "✅ Imported"
 	case "discard":
 		if err := m.DiscardReview(arg); err != nil {
 			return "Could not discard: " + err.Error()

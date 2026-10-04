@@ -21,7 +21,7 @@ func (m *Manager) backupDisc(ctx context.Context, job *Job) error {
 	dest := uniquePath(filepath.Join(root, backupName(s)))
 	part := dest + ".part"
 	_ = os.RemoveAll(part) // left by an interrupted attempt
-	if err := os.MkdirAll(root, os.FileMode(cfg.Output.DirMode)); err != nil {
+	if err := mkdirAll(root, os.FileMode(cfg.Output.DirMode)); err != nil {
 		return err
 	}
 	var total int64

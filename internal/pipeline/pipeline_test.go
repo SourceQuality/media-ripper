@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1104,5 +1105,34 @@ func TestFullDiscBackup(t *testing.T) {
 		if leftovers, _ := filepath.Glob(filepath.Join(e.out, "_backups", "*.part")); len(leftovers) != 0 {
 			t.Fatalf("%s: partial backup left behind: %v", name, leftovers)
 		}
+	}
+}
+
+// output.dir_mode and file_mode are applied as configured, not as the
+// service's umask (usually 022) would leave them.
+func TestOutputModesIgnoreUmask(t *testing.T) {
+	old := syscall.Umask(0o022)
+	defer syscall.Umask(old)
+	root := t.TempDir()
+	dir := filepath.Join(root, "a", "b")
+	if err := mkdirAll(dir, 0o775); err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []string{filepath.Join(root, "a"), dir} {
+		if st, _ := os.Stat(d); st.Mode().Perm() != 0o775 {
+			t.Fatalf("%s mode = %o, want 775", d, st.Mode().Perm())
+		}
+	}
+	if st, _ := os.Stat(root); st.Mode().Perm() == 0o775 {
+		t.Fatal("an existing parent must keep its mode")
+	}
+	src := filepath.Join(root, "src.mkv")
+	_ = os.WriteFile(src, []byte("data"), 0o600)
+	dst := filepath.Join(t.TempDir(), "dst.mkv") // another directory; rename or copy
+	if _, err := moveFile(context.Background(), src, dst, 0o664, nil); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(dst); st.Mode().Perm() != 0o664 {
+		t.Fatalf("file mode = %o, want 664", st.Mode().Perm())
 	}
 }
