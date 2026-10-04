@@ -169,6 +169,9 @@ type Arr struct {
 	Sonarr        ArrApp   `yaml:"sonarr" json:"sonarr"`
 	StagingSubdir string   `yaml:"staging_subdir" json:"staging_subdir"`
 	ImportTimeout Duration `yaml:"import_timeout" json:"import_timeout"`
+	// ImportPolicy decides which discs are imported without a person
+	// confirming the titles: always | confident | verified.
+	ImportPolicy string `yaml:"import_policy" json:"import_policy"`
 }
 
 // ArrApp is one Radarr or Sonarr instance.
@@ -295,6 +298,7 @@ func Default() Config {
 			Radarr:        ArrApp{AddMissing: true, ImportMode: "move"},
 			Sonarr:        ArrApp{AddMissing: true, ImportMode: "move"},
 			StagingSubdir: "_incoming",
+			ImportPolicy:  "confident",
 			ImportTimeout: Duration(10 * time.Minute),
 		},
 		Selection: Selection{
@@ -498,6 +502,11 @@ func (c *Config) Validate() error {
 	}
 	if c.Workspace == "" {
 		errs = append(errs, errors.New("workspace is required"))
+	}
+	switch c.Arr.ImportPolicy {
+	case "always", "confident", "verified":
+	default:
+		errs = append(errs, fmt.Errorf("arr.import_policy must be always, confident or verified, not %q", c.Arr.ImportPolicy))
 	}
 	if c.Output.Resume && c.Output.ResumeMaxAge.D() <= 0 {
 		errs = append(errs, errors.New("output.resume_max_age must be positive"))

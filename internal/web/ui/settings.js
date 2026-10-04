@@ -79,6 +79,7 @@
       { key: 'arr.sonarr.path_map', label: 'Path map', type: 'map', hint: 'local path = path as Sonarr sees it', wide: true },
     ]},
     { title: 'Handoff', fields: [
+      { key: 'arr.import_policy', label: 'Import without review', type: 'select', options: ['confident', 'verified', 'always'], hint: 'confident: verified discs and runtime-matched movies; others wait in Review' },
       { key: 'arr.staging_subdir', label: 'Staging folder', type: 'text' },
       { key: 'arr.import_timeout', label: 'Import timeout', type: 'duration' },
     ]},

@@ -121,6 +121,10 @@ func discordEmbed(ev Event) map[string]any {
 		}
 		e["description"] = fmt.Sprintf("%d file(s) delivered in %s.", len(ev.Outputs), ev.Elapsed)
 		field("Warnings", strings.Join(ev.Warnings, "\n"), false)
+	case "review":
+		e["title"], e["color"] = "Waiting for review: "+name, colorAmber
+		e["description"] = ev.Match + "\nThe files are in staging. Approve or correct the titles in the web UI's Review section; nothing is imported until then."
+		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 	case "failed":
 		e["title"], e["color"] = "Failed: "+name, colorRed
 		e["description"] = ev.Error

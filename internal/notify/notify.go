@@ -137,6 +137,8 @@ func ntfyTitle(ev Event) string {
 		return "Skipped: " + name
 	case "ready":
 		return "Ready for the next disc"
+	case "review":
+		return "Waiting for review: " + name
 	case "storage":
 		if ev.Match == "recovered" {
 			return "Library storage is back"

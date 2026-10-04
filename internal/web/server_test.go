@@ -193,3 +193,36 @@ func TestJobFromHistoryAfterRestart(t *testing.T) {
 		t.Fatalf("unknown job: %d", resp.StatusCode)
 	}
 }
+
+func TestReviewEndpoints(t *testing.T) {
+	cfg := config.Default()
+	cfg.Output.Path = t.TempDir()
+	st, _ := store.Open(t.TempDir())
+	_ = st.SaveReview("20261003-230000-001", map[string]any{"id": "20261003-230000-001", "label": "TWILIGHT_ZONE_SEASON1_DISC3", "stage": "review"})
+	m := pipeline.New(pipeline.Deps{Config: &cfg, Store: st})
+	srv := httptest.NewServer((&Server{Manager: m, Store: st, Version: "test"}).Handler())
+	defer srv.Close()
+
+	resp, _ := http.Get(srv.URL + "/api/reviews")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || !strings.Contains(string(body), "TWILIGHT_ZONE_SEASON1_DISC3") {
+		t.Fatalf("reviews: %d %s", resp.StatusCode, body)
+	}
+	resp, _ = http.Post(srv.URL+"/api/reviews/nope/approve", "application/json", nil)
+	resp.Body.Close()
+	if resp.StatusCode != 400 {
+		t.Fatalf("approve unknown: %d", resp.StatusCode)
+	}
+	resp, _ = http.Get(srv.URL + "/api/lookup?kind=tv&q=Friends")
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "no tv app") {
+		t.Fatalf("lookup without sonarr: %d %s", resp.StatusCode, body)
+	}
+	resp, _ = http.Post(srv.URL+"/api/reviews/20261003-230000-001/discard", "application/json", nil)
+	resp.Body.Close()
+	if resp.StatusCode != 200 || len(st.Reviews()) != 0 {
+		t.Fatalf("discard: %d, %d left", resp.StatusCode, len(st.Reviews()))
+	}
+}

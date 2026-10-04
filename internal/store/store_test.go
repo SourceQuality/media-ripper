@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -62,5 +63,32 @@ func TestCorruptFile(t *testing.T) {
 	_ = os.WriteFile(filepath.Join(dir, "series.json"), []byte("{not json"), 0o644)
 	if _, err := Open(dir); err == nil {
 		t.Fatal("expected error for corrupt state")
+	}
+}
+
+func TestReviewsAndMatchesPersist(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = s.SaveReview("20261003-230000-002", map[string]string{"id": "b"})
+	_ = s.SaveReview("20261003-220000-001", map[string]string{"id": "a"})
+	_ = s.SetDiscMatch("fp", DiscMatch{Kind: "tv", Title: "The Twilight Zone", Year: 1959, Season: 1, Episodes: map[int]int{3: 16, 4: 17}})
+	s2, _ := Open(dir)
+	got := s2.Reviews()
+	var first map[string]string
+	if len(got) == 2 {
+		_ = json.Unmarshal(got[0], &first)
+	}
+	if first["id"] != "a" {
+		t.Fatalf("reviews = %s", got)
+	}
+	if m, ok := s2.DiscMatch("fp"); !ok || m.Episodes[4] != 17 || m.ConfirmedAt.IsZero() {
+		t.Fatalf("match = %+v %v", m, ok)
+	}
+	_ = s2.DeleteReview("20261003-220000-001")
+	if _, ok := s2.Review("20261003-220000-001"); ok || len(s2.Reviews()) != 1 {
+		t.Fatal("review not deleted")
 	}
 }

@@ -26,12 +26,15 @@ const (
 	StageFailed      Stage = "failed"
 	StageSkipped     Stage = "skipped"
 	StageCancelled   Stage = "cancelled"
+	// StageReview: delivered to staging, waiting for a person to confirm
+	// the titles before Radarr/Sonarr import them. The drive is free.
+	StageReview Stage = "review"
 )
 
 // Terminal reports whether the stage is final.
 func (s Stage) Terminal() bool {
 	switch s {
-	case StageDone, StageFailed, StageSkipped, StageCancelled:
+	case StageDone, StageFailed, StageSkipped, StageCancelled, StageReview:
 		return true
 	}
 	return false

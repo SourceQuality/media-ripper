@@ -12,8 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sourcequality/media-ripper/internal/arr"
 	"github.com/sourcequality/media-ripper/internal/config"
+	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
+	"github.com/sourcequality/media-ripper/internal/selector"
 )
 
 // fakeRadarr "imports" by moving whatever is under the scanned path into
@@ -301,6 +304,8 @@ func sonarrEnv(t *testing.T, o sonarrOpts) (*env, string) {
 	srv := fakeSonarr(t, root, o)
 	t.Cleanup(srv.Close)
 	e.cfg.Arr.Sonarr = config.ArrApp{Enabled: true, URL: srv.URL, APIKey: "k", RootFolder: root, AddMissing: true, ImportMode: "move"}
+	// These tests are about the import itself; review is tested apart.
+	e.cfg.Arr.ImportPolicy = PolicyAlways
 	e.m.SetConfig(e.cfg)
 	return e, root
 }
@@ -384,5 +389,111 @@ func TestSonarrImportSeenLateIsNotAFailure(t *testing.T) {
 	}
 	if got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(got) != 2 {
 		t.Fatalf("sonarr received %d files, want 2", len(got))
+	}
+}
+
+// With the default policy a disc numbered by length waits for a person;
+// approving with a correction renames the staged files, imports them and
+// remembers the match for the next time the disc goes in.
+func TestReviewHoldApproveAndRemember(t *testing.T) {
+	e, root := sonarrEnv(t, sonarrOpts{})
+	e.cfg.Arr.ImportPolicy = PolicyConfident
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-2", "FRIENDS_S1_D2")
+	j := e.waitDone(t)
+	if j.Stage != StageReview {
+		t.Fatalf("stage = %s, want review", j.Stage)
+	}
+	if got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(got) != 0 {
+		t.Fatalf("held disc was imported: %v", got)
+	}
+	if e.drv.ejectCount() != 1 {
+		t.Fatal("a held disc should still leave the drive")
+	}
+	reviews := e.m.Reviews()
+	if len(reviews) != 1 || reviews[0].ID != j.ID {
+		t.Fatalf("reviews = %+v", reviews)
+	}
+
+	// It was really disc 2: episodes 5 and 6, and the second title is kept.
+	edit := &ReviewEdit{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TVDBID: 79168, Season: 1, Episodes: map[int]int{1: 5, 2: 6}}
+	done, err := e.m.ApproveReview(ctx, j.ID, edit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done.Stage != StageDone || len(done.Warnings) != 0 {
+		t.Fatalf("approved: stage=%s warnings=%v", done.Stage, done.Warnings)
+	}
+	got, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv"))
+	names := map[string]bool{}
+	for _, g := range got {
+		names[filepath.Base(g)] = true
+	}
+	if !names["Friends - S01E05.mkv"] || !names["Friends - S01E06.mkv"] {
+		t.Fatalf("imported %v", got)
+	}
+	if len(e.m.Reviews()) != 0 {
+		t.Fatal("review not cleared")
+	}
+	if next := e.st.NextEpisode("Friends", 1); next != 7 { // no TMDB id: keyed by title
+		t.Fatalf("next episode = %d", next)
+	}
+
+	// Same disc again: the confirmed match is used, no review needed.
+	_ = e.st.ForgetDisc("fp-friends-2")
+	e.drv.insert("fp-friends-2", "FRIENDS_S1_D2")
+	deadline := time.Now().Add(10 * time.Second)
+	var again Job
+	for time.Now().Before(deadline) {
+		if r := e.m.Snapshot().Recent; len(r) == 2 && r[0].Stage.Terminal() {
+			again = r[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if again.Stage != StageDone || again.Identity.Source != sourceManual || again.Selection.Picks[0].Episode != 5 {
+		t.Fatalf("reinserted: stage=%s identity=%+v picks=%+v", again.Stage, again.Identity, again.Selection.Picks)
+	}
+	if !strings.HasPrefix(again.Verification, "✅ Confirmed by you") {
+		t.Fatalf("verification = %q", again.Verification)
+	}
+}
+
+func TestNeedsReview(t *testing.T) {
+	e, _ := sonarrEnv(t, sonarrOpts{})
+	rt := e.m.rt.Load()
+	tv := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Confidence: 1, Source: "sonarr"}
+	movie := &metadata.Identity{Kind: metadata.KindMovie, Title: "The Matrix", Confidence: 1, Source: "radarr", Runtime: 136 * time.Minute}
+	pick := func(d time.Duration) *selector.Selection {
+		return &selector.Selection{Picks: []selector.Pick{{Title: &makemkv.Title{Duration: d}}}}
+	}
+	outs := []Output{{Path: "x"}}
+	cases := []struct {
+		name   string
+		policy string
+		job    Job
+		want   bool
+	}{
+		{"always imports", PolicyAlways, Job{Identity: tv, Outputs: outs}, false},
+		{"tv by length waits", PolicyConfident, Job{Identity: tv, Outputs: outs}, true},
+		{"verified tv imports", PolicyVerified, Job{Identity: tv, Outputs: outs, CatalogMatched: 8, CatalogCompared: 8}, false},
+		{"partly matched waits", PolicyConfident, Job{Identity: tv, Outputs: outs, CatalogMatched: 7, CatalogCompared: 9}, true},
+		{"runtime-matched movie imports when confident", PolicyConfident, Job{Identity: movie, Outputs: outs, Selection: pick(136 * time.Minute)}, false},
+		{"runtime-matched movie waits when verified only", PolicyVerified, Job{Identity: movie, Outputs: outs, Selection: pick(136 * time.Minute)}, true},
+		{"movie off by 20 minutes waits", PolicyConfident, Job{Identity: movie, Outputs: outs, Selection: pick(156 * time.Minute)}, true},
+	}
+	for _, c := range cases {
+		rt.cfg.Arr.ImportPolicy = c.policy
+		if c.job.Identity.Kind == metadata.KindMovie {
+			rt.cfg.Arr.Radarr.Enabled, rt.cfg.Arr.Radarr.URL, rt.cfg.Arr.Radarr.APIKey = true, "http://radarr", "k"
+			rt.radarr = arr.New(arr.Radarr, rt.cfg.Arr.Radarr, time.Second, nil)
+		}
+		if got := needsReview(c.job, rt); got != c.want {
+			t.Errorf("%s: needsReview = %v", c.name, got)
+		}
 	}
 }

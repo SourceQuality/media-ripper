@@ -58,7 +58,7 @@
       <span class="spacer"></span><span class="nums">${esc(nums)}</span></div>
       <div class="bar small ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div></div>`;
   };
-  const terminal = s => ['done', 'failed', 'skipped', 'cancelled'].includes(s);
+  const terminal = s => ['done', 'failed', 'skipped', 'cancelled', 'review'].includes(s);
 
   // The disc in progress, one line per title that stays put while its
   // state moves on: waiting → ripping → ripped → copying → delivered.
@@ -199,7 +199,7 @@
     return '';
   };
 
-  const icon = { done: '✓', failed: '✕', cancelled: '–', skipped: '↷' };
+  const icon = { done: '✓', failed: '✕', cancelled: '–', skipped: '↷', review: '?' };
   const historyCard = j => {
     const warnings = (j.warnings || []).map(w => `<div class="warning">${esc(w)}</div>`).join('');
     const outcome = outcomeLine(j);
@@ -238,6 +238,88 @@
     return out.join('');
   };
 
+  // Discs held for a person. Only re-rendered when the set of held discs
+  // changes, so a half-filled form survives the 2-second refresh.
+  let reviewKey = null;
+  const renderReviews = list => {
+    const key = list.map(j => j.id).join(',');
+    if (key === reviewKey) return;
+    reviewKey = key;
+    $('#reviews').innerHTML = list.length ? `<h2>Waiting for review</h2>${list.map(reviewCard).join('')}` : '';
+    for (const card of document.querySelectorAll('.review')) wireReview(card);
+  };
+
+  const reviewCard = j => {
+    const id = j.identity || {};
+    const tv = id.kind !== 'movie';
+    const picks = (j.selection && j.selection.picks) || [];
+    const outs = Object.fromEntries((j.outputs || []).map(o => [o.title_id, o]));
+    const rows = picks.map(p => `<li data-title="${p.title.id}">
+        <label class="keep"><input type="checkbox" checked> <span class="code">Title ${p.title.id}</span></label>
+        <span class="meta">${esc(fmtDur(p.title.duration))}</span><span class="meta">${esc(fmtBytes((outs[p.title.id] || {}).size || p.title.size_bytes || 0))}</span>
+        <span class="name">${p.episode ? esc(`was S${pad(p.season)}E${pad(p.episode)} ${p.episode_title || ''}`) : esc(p.title.source_file || '')}</span>
+        <label class="ep ${tv ? '' : 'hidden'}">Episode <input type="number" min="1" value="${p.episode || ''}"></label></li>`).join('');
+    return `<div class="card review" data-id="${esc(j.id)}" data-tmdb="${id.tmdb_id || ''}" data-tvdb="${id.tvdb_id || ''}">
+      <div class="row"><span class="badge review">?</span><span class="title">${esc(discHeading(j))}</span><span class="spacer"></span><span class="muted">${esc(fmtWhen(j.finished_at || j.started_at))}</span></div>
+      <div class="sub muted">${esc(j.verification || '')}</div>
+      <div class="form">
+        <label>Type <select class="kind"><option value="tv"${tv ? ' selected' : ''}>TV</option><option value="movie"${tv ? '' : ' selected'}>Movie</option></select></label>
+        <label class="grow">Title <input class="title-in" value="${esc(id.title || '')}"></label>
+        <label>Year <input class="year" type="number" value="${id.year || ''}"></label>
+        <label class="season-l ${tv ? '' : 'hidden'}">Season <input class="season" type="number" min="1" value="${id.season || 1}"></label>
+        <button type="button" class="search">Search</button>
+      </div>
+      <div class="results"></div>
+      <ul class="eps review-eps">${rows}</ul>
+      <div class="row end"><span class="status muted"></span><button type="button" class="discard">Discard</button><button type="button" class="primary approve">Approve &amp; import</button></div>
+    </div>`;
+  };
+
+  const wireReview = card => {
+    const q = s => card.querySelector(s);
+    const kind = () => q('.kind').value;
+    q('.kind').onchange = () => {
+      card.querySelectorAll('.ep, .season-l').forEach(el => el.classList.toggle('hidden', kind() !== 'tv'));
+    };
+    q('.search').onclick = () => {
+      const out = q('.results');
+      out.textContent = 'Searching…';
+      fetch(`/api/lookup?kind=${kind()}&q=${encodeURIComponent(q('.title-in').value)}`).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; })
+        .then(list => {
+          out.innerHTML = list.length ? list.map((x, i) => `<button type="button" data-i="${i}">${esc(x.title)}${x.year ? ' (' + x.year + ')' : ''}</button>`).join('') : 'Nothing found';
+          out.querySelectorAll('button').forEach(b => b.onclick = () => {
+            const x = list[+b.dataset.i];
+            q('.title-in').value = x.title; q('.year').value = x.year || '';
+            card.dataset.tmdb = x.tmdb_id || ''; card.dataset.tvdb = x.tvdb_id || '';
+            out.innerHTML = '';
+          });
+        }).catch(e => { out.textContent = e.message; });
+    };
+    // Typing a new title forgets the ids of the old one.
+    q('.title-in').oninput = () => { card.dataset.tmdb = ''; card.dataset.tvdb = ''; };
+    const status = q('.status');
+    q('.approve').onclick = () => {
+      const episodes = {};
+      for (const li of card.querySelectorAll('.review-eps li')) {
+        if (!li.querySelector('.keep input').checked) continue;
+        episodes[li.dataset.title] = kind() === 'tv' ? parseInt(li.querySelector('.ep input').value, 10) || 0 : 0;
+      }
+      const edit = { kind: kind(), title: q('.title-in').value.trim(), year: parseInt(q('.year').value, 10) || 0,
+        tmdb_id: parseInt(card.dataset.tmdb, 10) || 0, tvdb_id: parseInt(card.dataset.tvdb, 10) || 0,
+        season: kind() === 'tv' ? parseInt(q('.season').value, 10) || 0 : 0, episodes };
+      card.querySelectorAll('button').forEach(b => b.disabled = true);
+      status.textContent = 'Importing… (the app moves the files; this can take a minute)';
+      fetch(`/api/reviews/${encodeURIComponent(card.dataset.id)}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) })
+        .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; })
+        .then(j => { status.textContent = (j.warnings || []).length ? 'Imported with warnings: ' + j.warnings.join('; ') : 'Imported'; reviewKey = null; refresh(); })
+        .catch(e => { status.textContent = e.message; card.querySelectorAll('button').forEach(b => b.disabled = false); });
+    };
+    q('.discard').onclick = () => {
+      if (!confirm('Forget this disc? Its files stay in staging; nothing is imported.')) return;
+      fetch(`/api/reviews/${encodeURIComponent(card.dataset.id)}/discard`, { method: 'POST' }).then(() => { reviewKey = null; refresh(); });
+    };
+  };
+
   const render = s => {
     $('#version').textContent = s.version || '';
     $('#notices').innerHTML = notices(s);
@@ -250,7 +332,8 @@
   const refresh = () => Promise.all([
     fetch('/api/status').then(r => r.json()),
     fetch('/api/history?limit=25').then(r => r.json()).catch(() => history),
-  ]).then(([s, h]) => { history = Array.isArray(h) ? h : []; render(s); }).catch(() => {})
+    fetch('/api/reviews').then(r => r.json()).catch(() => null),
+  ]).then(([s, h, rv]) => { history = Array.isArray(h) ? h : []; render(s); if (Array.isArray(rv)) renderReviews(rv); }).catch(() => {})
     .finally(() => { clearTimeout(timer); timer = setTimeout(refresh, document.hidden ? 10000 : 2000); });
   document.addEventListener('visibilitychange', refresh);
   refresh();

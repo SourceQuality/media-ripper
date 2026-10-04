@@ -21,8 +21,26 @@ type Store struct {
 	dir string
 	mu  sync.Mutex
 
-	series map[string]SeriesProgress
-	discs  map[string]DiscRecord
+	series  map[string]SeriesProgress
+	discs   map[string]DiscRecord
+	reviews map[string]json.RawMessage
+	matches map[string]DiscMatch
+}
+
+// DiscMatch is what a person confirmed a disc to be. It is used instead of
+// the label lookup the next time the same disc (by fingerprint) goes in.
+type DiscMatch struct {
+	Kind   string `json:"kind"` // movie | tv
+	Title  string `json:"title"`
+	Year   int    `json:"year,omitempty"`
+	TMDBID int    `json:"tmdb_id,omitempty"`
+	TVDBID int    `json:"tvdb_id,omitempty"`
+	Season int    `json:"season,omitempty"`
+	Disc   int    `json:"disc,omitempty"`
+	// Episodes maps MakeMKV title ids to the episode each holds; titles
+	// not listed were left out.
+	Episodes    map[int]int `json:"episodes,omitempty"`
+	ConfirmedAt time.Time   `json:"confirmed_at"`
 }
 
 // SeriesProgress remembers where the next disc of a season starts.
@@ -48,11 +66,17 @@ func Open(dir string) (*Store, error) {
 	if err := os.MkdirAll(dir, 0o775); err != nil {
 		return nil, err
 	}
-	s := &Store{dir: dir, series: map[string]SeriesProgress{}, discs: map[string]DiscRecord{}}
+	s := &Store{dir: dir, series: map[string]SeriesProgress{}, discs: map[string]DiscRecord{}, reviews: map[string]json.RawMessage{}, matches: map[string]DiscMatch{}}
 	if err := s.loadJSON("series.json", &s.series); err != nil {
 		return nil, err
 	}
 	if err := s.loadJSON("discs.json", &s.discs); err != nil {
+		return nil, err
+	}
+	if err := s.loadJSON("reviews.json", &s.reviews); err != nil {
+		return nil, err
+	}
+	if err := s.loadJSON("matches.json", &s.matches); err != nil {
 		return nil, err
 	}
 	return s, nil
@@ -210,4 +234,67 @@ func (s *Store) History(limit int) ([]json.RawMessage, error) {
 		all[i], all[j] = all[j], all[i]
 	}
 	return all, nil
+}
+
+// SaveReview keeps a job that waits for a person to confirm its titles.
+func (s *Store) SaveReview(id string, v any) error {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reviews[id] = data
+	return s.saveJSON("reviews.json", s.reviews)
+}
+
+// Reviews returns the waiting jobs, oldest first.
+func (s *Store) Reviews() []json.RawMessage {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]string, 0, len(s.reviews))
+	for id := range s.reviews {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids) // job ids start with their timestamp
+	out := make([]json.RawMessage, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, s.reviews[id])
+	}
+	return out
+}
+
+// Review returns one waiting job.
+func (s *Store) Review(id string) (json.RawMessage, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.reviews[id]
+	return r, ok
+}
+
+// DeleteReview removes a job once it has been dealt with.
+func (s *Store) DeleteReview(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.reviews, id)
+	return s.saveJSON("reviews.json", s.reviews)
+}
+
+// SetDiscMatch remembers what a person confirmed a disc to be.
+func (s *Store) SetDiscMatch(fp string, m DiscMatch) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m.ConfirmedAt.IsZero() {
+		m.ConfirmedAt = time.Now()
+	}
+	s.matches[fp] = m
+	return s.saveJSON("matches.json", s.matches)
+}
+
+// DiscMatch returns the confirmed match for a disc, if any.
+func (s *Store) DiscMatch(fp string) (DiscMatch, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m, ok := s.matches[fp]
+	return m, ok
 }

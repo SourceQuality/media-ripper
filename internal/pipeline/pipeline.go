@@ -742,6 +742,10 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			}
 		}
 	}
+	if needsReview(job.Snapshot(), job.rt) {
+		m.holdForReview(job)
+		return false
+	}
 	m.arrHandoff(ctx, job)
 
 	job.setStage(StageDone, "done")
@@ -767,7 +771,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	workDir := workDir(cfg, job)
 
 	switch snap.Stage {
-	case StageDone:
+	case StageDone, StageReview:
 		var outs []string
 		for _, o := range snap.Outputs {
 			outs = append(outs, o.Path)
@@ -783,6 +787,9 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		_ = os.RemoveAll(workDir)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
 		ev := m.event(job, "done")
+		if snap.Stage == StageReview {
+			ev.Type = "review"
+		}
 		ev.Outputs, ev.Elapsed, ev.Error = outs, snap.Elapsed, strings.Join(snap.Warnings, "; ")
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case StageFailed, StageCancelled:
@@ -810,7 +817,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	}
 	// A cancel is a person at the web UI, usually about to change settings
 	// and rescan, so the disc stays in. Failures eject for the next disc.
-	eject := (snap.Stage == StageDone || snap.Stage == StageSkipped) && cfg.Eject.OnSuccess ||
+	eject := (snap.Stage == StageDone || snap.Stage == StageReview || snap.Stage == StageSkipped) && cfg.Eject.OnSuccess ||
 		snap.Stage == StageFailed && cfg.Eject.OnFailure
 	if eject {
 		if err := d.Eject(); err != nil {
@@ -818,7 +825,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			return false
 		}
 		log.Info("ejected", "stage", snap.Stage)
-		if snap.Stage == StageDone {
+		if snap.Stage == StageDone || snap.Stage == StageReview {
 			job.rt.notifier.Send(context.WithoutCancel(ctx), m.event(job, "ready"))
 		}
 	}
@@ -930,12 +937,19 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 	job.setStage(StageIdentifying, "looking up "+label)
 	hint := metadata.ParseLabel(applyOverride(cfg, label))
 	job.logf("label %q → query %q year=%d season=%d disc=%d", label, hint.Query, hint.Year, hint.Season, hint.Disc)
-	ictx, icancel := context.WithTimeout(ctx, maxDur(cfg.Metadata.Timeout.D()*4, time.Minute))
-	id, err := job.rt.provider.Identify(ictx, hint, selector.DiscHints(disc))
-	icancel()
-	if err != nil {
-		log.Warn("identify", "err", err)
-		job.logf("lookup failed: %v (continuing unidentified)", err)
+	var id *metadata.Identity
+	confirmed, isConfirmed := m.deps.Store.DiscMatch(job.Fingerprint)
+	if isConfirmed {
+		id = confirmedIdentity(confirmed, hint)
+		job.logf("this disc was confirmed by a person on %s", confirmed.ConfirmedAt.Format("2 Jan 2006"))
+	} else {
+		ictx, icancel := context.WithTimeout(ctx, maxDur(cfg.Metadata.Timeout.D()*4, time.Minute))
+		id, err = job.rt.provider.Identify(ictx, hint, selector.DiscHints(disc))
+		icancel()
+		if err != nil {
+			log.Warn("identify", "err", err)
+			job.logf("lookup failed: %v (continuing unidentified)", err)
+		}
 	}
 	if id == nil {
 		id = &metadata.Identity{Kind: metadata.KindUnknown, Hint: hint}
@@ -967,7 +981,9 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 		opts.NextEpisode = m.deps.Store.NextEpisode(seriesKey(id), id.Season)
 	}
 	var sel *selector.Selection
-	if entries, source := m.catalogEntries(ctx, job, disc, id); entries != nil {
+	if isConfirmed && len(confirmed.Episodes) > 0 {
+		sel, err = selector.SelectFromCatalog(disc, id, confirmedEntries(confirmed), "Confirmed")
+	} else if entries, source := m.catalogEntries(ctx, job, disc, id); entries != nil {
 		sel, err = selector.SelectFromCatalog(disc, id, entries, source)
 		adoptCatalogSeason(job, id, sel)
 	} else {
@@ -1172,48 +1188,10 @@ func mkvTitle(job *Job, pick selector.Pick) string {
 func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, file string) (Output, error) {
 	cfg := job.rt.cfg
 	job.stepStage(StageDelivering, "copying "+pickName(pick)+" to library")
-	s := job.Snapshot()
-	vars := naming.Vars{Label: s.Label, TitleID: pick.Title.ID, Date: s.StartedAt}
-	if v := pick.Title.Video(); v != nil {
-		vars.Resolution = resolutionName(v.VideoSize)
-	}
-	if disc.IsBluray() {
-		vars.Source = "bluray"
-	} else {
-		vars.Source = "dvd"
-	}
-	var tmpl, sub string
-	switch {
-	case s.Identity != nil && s.Identity.Kind == metadata.KindMovie && s.Identity.Identified():
-		tmpl, sub = cfg.Output.MovieTemplate, cfg.Output.MoviesSubdir
-		vars.Title, vars.Year = s.Identity.Title, s.Identity.Year
-	case s.Identity != nil && s.Identity.Kind == metadata.KindTV && s.Identity.Identified():
-		tmpl, sub = cfg.Output.TVTemplate, cfg.Output.TVSubdir
-		vars.Series, vars.Title, vars.Year = s.Identity.Title, s.Identity.Title, s.Identity.Year
-		vars.Season, vars.Episode, vars.EpisodeEnd, vars.EpisodeTitle = pick.Season, pick.Episode, pick.EpisodeEnd, pick.EpisodeTitle
-	default:
-		tmpl, sub = cfg.Output.UnknownTemplate, cfg.Output.UnidentifiedDir
-		vars.Title = s.Label
-		if vars.Label == "" {
-			vars.Label = "disc"
-		}
-		if pick.Episode > 0 { // unidentified TV set
-			tmpl = "{label} {date}/{label} - S{season:02}E{episode:02}.mkv"
-			vars.Season, vars.Episode, vars.EpisodeEnd = pick.Season, pick.Episode, pick.EpisodeEnd
-		}
-	}
-	rel, err := naming.Render(tmpl, vars)
+	dest, err := destPath(cfg, job.rt, job.Snapshot(), pick, filepath.Ext(file), disc.IsBluray())
 	if err != nil {
 		return Output{}, err
 	}
-	if ext := filepath.Ext(file); ext != "" && !strings.EqualFold(filepath.Ext(rel), ext) {
-		rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + ext
-	}
-	if job.rt.arrFor(s.Identity) != nil {
-		// Radarr/Sonarr will move it into their own library layout.
-		sub = cfg.Arr.StagingSubdir
-	}
-	dest := filepath.Join(cfg.Output.Path, sub, rel)
 	if !cfg.Output.Overwrite {
 		dest = uniquePath(dest)
 	}
@@ -1384,6 +1362,9 @@ func verification(s Job) string {
 	if id == nil {
 		return ""
 	}
+	if id.Source == sourceManual {
+		return "✅ Confirmed by you"
+	}
 	if !id.Identified() {
 		label := s.Label
 		if label == "" {
@@ -1424,4 +1405,51 @@ func sourceName(src string) string {
 		return "lookup"
 	}
 	return src
+}
+
+// destPath is where a title is delivered: the library layout from the
+// naming templates, or the Radarr/Sonarr staging folder when an app will
+// import it.
+func destPath(cfg *config.Config, rt *runtime, s Job, pick selector.Pick, ext string, bluray bool) (string, error) {
+	vars := naming.Vars{Label: s.Label, TitleID: pick.Title.ID, Date: s.StartedAt}
+	if v := pick.Title.Video(); v != nil {
+		vars.Resolution = resolutionName(v.VideoSize)
+	}
+	if bluray {
+		vars.Source = "bluray"
+	} else {
+		vars.Source = "dvd"
+	}
+	var tmpl, sub string
+	switch {
+	case s.Identity != nil && s.Identity.Kind == metadata.KindMovie && s.Identity.Identified():
+		tmpl, sub = cfg.Output.MovieTemplate, cfg.Output.MoviesSubdir
+		vars.Title, vars.Year = s.Identity.Title, s.Identity.Year
+	case s.Identity != nil && s.Identity.Kind == metadata.KindTV && s.Identity.Identified():
+		tmpl, sub = cfg.Output.TVTemplate, cfg.Output.TVSubdir
+		vars.Series, vars.Title, vars.Year = s.Identity.Title, s.Identity.Title, s.Identity.Year
+		vars.Season, vars.Episode, vars.EpisodeEnd, vars.EpisodeTitle = pick.Season, pick.Episode, pick.EpisodeEnd, pick.EpisodeTitle
+	default:
+		tmpl, sub = cfg.Output.UnknownTemplate, cfg.Output.UnidentifiedDir
+		vars.Title = s.Label
+		if vars.Label == "" {
+			vars.Label = "disc"
+		}
+		if pick.Episode > 0 { // unidentified TV set
+			tmpl = "{label} {date}/{label} - S{season:02}E{episode:02}.mkv"
+			vars.Season, vars.Episode, vars.EpisodeEnd = pick.Season, pick.Episode, pick.EpisodeEnd
+		}
+	}
+	rel, err := naming.Render(tmpl, vars)
+	if err != nil {
+		return "", err
+	}
+	if ext != "" && !strings.EqualFold(filepath.Ext(rel), ext) {
+		rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + ext
+	}
+	if rt.arrFor(s.Identity) != nil {
+		// Radarr/Sonarr will move it into their own library layout.
+		sub = cfg.Arr.StagingSubdir
+	}
+	return filepath.Join(cfg.Output.Path, sub, rel), nil
 }
