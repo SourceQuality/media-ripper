@@ -166,6 +166,13 @@ arr:
     import_mode: move
     path_map: {}
   staging_subdir: _incoming
+  # Which discs are imported without you confirming the titles first.
+  #   always:    everything (titles chosen by length are imported as they are)
+  #   confident: discs TheDiscDB verified title by title, and movies whose
+  #              runtime matched; everything else waits in the web UI's
+  #              Review section (files stay in staging until you approve)
+  #   verified:  only discs TheDiscDB verified
+  import_policy: confident
   import_timeout: 10m
 
 eject:

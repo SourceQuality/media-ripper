@@ -3,8 +3,11 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
+	"errors"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/config"
+	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
 	"github.com/sourcequality/media-ripper/internal/updates"
@@ -55,6 +59,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/series/reset", s.resetSeries)
 	mux.HandleFunc("POST /api/discs/forget", s.forgetDisc)
 	mux.HandleFunc("POST /api/notify/test", s.testNotify)
+	mux.HandleFunc("GET /api/reviews", s.reviews)
+	mux.HandleFunc("POST /api/reviews/{id}/approve", s.approveReview)
+	mux.HandleFunc("POST /api/reviews/{id}/discard", s.discardReview)
+	mux.HandleFunc("GET /api/lookup", s.lookup)
 	return logRequests(mux, s.Logger)
 }
 
@@ -294,4 +302,57 @@ func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) reviews(w http.ResponseWriter, r *http.Request) {
+	list := s.Manager.Reviews()
+	if list == nil {
+		list = []pipeline.Job{}
+	}
+	writeJSON(w, http.StatusOK, list)
+}
+
+// approveReview imports a held disc, with the person's correction when the
+// body carries one. Importing can take minutes (the app moves the files).
+func (s *Server) approveReview(w http.ResponseWriter, r *http.Request) {
+	var edit *pipeline.ReviewEdit
+	if r.ContentLength != 0 {
+		var e pipeline.ReviewEdit
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&e); err != nil && !errors.Is(err, io.EOF) {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		} else if err == nil {
+			edit = &e
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Minute)
+	defer cancel()
+	j, err := s.Manager.ApproveReview(ctx, r.PathValue("id"), edit)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, j)
+}
+
+func (s *Server) discardReview(w http.ResponseWriter, r *http.Request) {
+	if err := s.Manager.DiscardReview(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if q == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "q required"})
+		return
+	}
+	res, err := s.Manager.Lookup(r.Context(), metadata.Kind(r.URL.Query().Get("kind")), q)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, res)
 }
