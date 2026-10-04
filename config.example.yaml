@@ -37,6 +37,12 @@ output:
   file_mode: 0664
   # Keep the partial rip folder when a job fails (for debugging).
   keep_workspace_on_error: false
+  # When a rip fails or is cancelled, keep the titles already ripped. The
+  # next attempt on the same disc (reinsert or Rescan) skips titles that
+  # are ripped or delivered and continues from the first missing one.
+  # Kept workspaces older than resume_max_age are removed at startup.
+  resume: true
+  resume_max_age: 72h
 
 makemkv:
   binary: makemkvcon

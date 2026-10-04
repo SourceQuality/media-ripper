@@ -102,6 +102,10 @@ type Output struct {
 	DirMode              Mode   `yaml:"dir_mode" json:"dir_mode"`
 	FileMode             Mode   `yaml:"file_mode" json:"file_mode"`
 	KeepWorkspaceOnError bool   `yaml:"keep_workspace_on_error" json:"keep_workspace_on_error"`
+	// Resume keeps a failed or cancelled disc's ripped titles so the next
+	// attempt on the same disc skips what is already ripped or delivered.
+	Resume       bool     `yaml:"resume" json:"resume"`
+	ResumeMaxAge Duration `yaml:"resume_max_age" json:"resume_max_age"`
 }
 
 // MakeMKV configures the makemkvcon invocation.
@@ -227,6 +231,8 @@ func Default() Config {
 			UnknownTemplate: "{label} {date}/{label} - t{title_id:02}.mkv",
 			DirMode:         0o775,
 			FileMode:        0o664,
+			Resume:          true,
+			ResumeMaxAge:    Duration(72 * time.Hour),
 		},
 		MakeMKV: MakeMKV{
 			Binary:        "makemkvcon",
@@ -445,6 +451,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Workspace == "" {
 		errs = append(errs, errors.New("workspace is required"))
+	}
+	if c.Output.Resume && c.Output.ResumeMaxAge.D() <= 0 {
+		errs = append(errs, errors.New("output.resume_max_age must be positive"))
 	}
 	if c.PollInterval.D() < 500*time.Millisecond {
 		errs = append(errs, errors.New("poll_interval must be at least 500ms"))

@@ -21,6 +21,8 @@
       { key: 'output.dir_mode', label: 'Directory mode', type: 'mode' },
       { key: 'output.file_mode', label: 'File mode', type: 'mode' },
       { key: 'output.keep_workspace_on_error', label: 'Keep workspace on error', type: 'bool' },
+      { key: 'output.resume', label: 'Resume interrupted discs', type: 'bool' },
+      { key: 'output.resume_max_age', label: 'Keep partial rips for', type: 'duration' },
     ]},
     { title: 'MakeMKV', fields: [
       { key: 'makemkv.binary', label: 'Binary', type: 'text' },
