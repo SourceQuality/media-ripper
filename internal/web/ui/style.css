@@ -63,6 +63,10 @@ td.actions { text-align: right; white-space: nowrap; }
 .eps .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .eps .meta, .eps .state { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .eps .state { overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.eps.live .state { min-width: 0; }
+.eps.live li.active { background: linear-gradient(to right, color-mix(in srgb, var(--accent) 14%, transparent) var(--p, 0%), transparent var(--p, 0%)); border-radius: 4px; }
+.eps .active .mark, .eps .active .state { color: var(--accent); }
+.eps.live li { grid-template-columns: 18px 76px minmax(0, 1fr) auto auto minmax(0, 240px); }
 .history .warning { margin-top: 8px; font-size: 13px; color: var(--warn); }
 .row.end { justify-content: flex-end; margin-top: 8px; }
 @media (max-width: 640px) { .eps li { grid-template-columns: 18px 64px minmax(0, 1fr) auto; } .eps li .meta:nth-of-type(5), .eps .state { display: none; } }
