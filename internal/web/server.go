@@ -52,6 +52,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/drives/{drive}/rescan", s.rescan)
 	mux.HandleFunc("POST /api/series/reset", s.resetSeries)
 	mux.HandleFunc("POST /api/discs/forget", s.forgetDisc)
+	mux.HandleFunc("POST /api/notify/test", s.testNotify)
 	return logRequests(mux, s.Logger)
 }
 
@@ -261,6 +262,15 @@ func (s *Server) forgetDisc(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := s.Store.ForgetDisc(body.Fingerprint); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// testNotify sends a test message with the saved notification settings.
+func (s *Server) testNotify(w http.ResponseWriter, r *http.Request) {
+	if err := s.Manager.TestNotify(r.Context()); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

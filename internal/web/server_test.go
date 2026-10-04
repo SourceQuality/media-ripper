@@ -128,3 +128,43 @@ func TestPutConfig(t *testing.T) {
 		t.Fatalf("unknown key accepted: %d", code)
 	}
 }
+
+// The Discord token and webhook URL are secrets; the test button reports
+// what Discord said.
+func TestDiscordSettingsAndTest(t *testing.T) {
+	var posts int
+	discord := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message": "Unknown Webhook", "code": 10015}`))
+	}))
+	defer discord.Close()
+	cfg := config.Default()
+	cfg.Output.Path = t.TempDir()
+	cfg.Notify.Discord.BotToken = "bot-token-secret"
+	cfg.Notify.Discord.WebhookURL = discord.URL + "/api/webhooks/1/hook-secret"
+	st, _ := store.Open(t.TempDir())
+	m := pipeline.New(pipeline.Deps{Config: &cfg, Store: st})
+	srv := httptest.NewServer((&Server{Manager: m, Store: st, Version: "test"}).Handler())
+	defer srv.Close()
+
+	resp, _ := http.Get(srv.URL + "/api/config")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	for _, leak := range []string{"bot-token-secret", "hook-secret"} {
+		if strings.Contains(string(body), leak) {
+			t.Fatalf("config leaks %q", leak)
+		}
+	}
+	if !strings.Contains(string(body), `"notify.discord.bot_token": true`) || !strings.Contains(string(body), `"application_id": "1556123331047202997"`) {
+		t.Fatalf("config view: %s", body)
+	}
+
+	// No channel id, so the webhook is used; Discord refuses it.
+	resp, _ = http.Post(srv.URL+"/api/notify/test", "application/json", nil)
+	out, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(out), "Unknown Webhook") || posts != 1 {
+		t.Fatalf("test: %d %s (posts %d)", resp.StatusCode, out, posts)
+	}
+}

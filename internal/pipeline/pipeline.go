@@ -169,7 +169,8 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 		rt.catalog = c
 	}
 	if rt.notifier == nil {
-		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log}
+		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log,
+			Discord: &notify.Discord{BotToken: cfg.Notify.Discord.BotToken, ChannelID: cfg.Notify.Discord.ChannelID, WebhookURL: cfg.Notify.Discord.WebhookURL}}
 	}
 	return rt
 }
@@ -586,8 +587,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	if rs.resumable() {
 		job.logf("resuming: reusing titles ripped or delivered by an earlier attempt")
 	}
-	title := displayTitle(job)
-	job.rt.notifier.Send(ctx, notify.Event{Type: "started", Drive: job.Drive, Label: job.Label, Title: title})
+	job.rt.notifier.Send(ctx, m.event(job, "started"))
 
 	// Rip everything before anything else needs the disc so it can leave the
 	// drive as early as possible. When the disc is already identified, each
@@ -695,6 +695,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			job.set(func(j *Job) { j.Ejected = true })
 			job.logf("ejected")
 			log.Info("ejected", "stage", "ripped")
+			job.rt.notifier.Send(ctx, m.event(job, "ready"))
 		}
 	}
 
@@ -765,17 +766,23 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		}
 		_ = os.RemoveAll(workDir)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
-		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "done", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Outputs: outs, Elapsed: snap.Elapsed, Error: strings.Join(snap.Warnings, "; ")})
+		ev := m.event(job, "done")
+		ev.Outputs, ev.Elapsed, ev.Error = outs, snap.Elapsed, strings.Join(snap.Warnings, "; ")
+		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case StageFailed, StageCancelled:
 		if !cfg.Output.KeepWorkspaceOnError && !cfg.Output.Resume {
 			_ = os.RemoveAll(workDir)
 		}
 		log.Error("job "+string(snap.Stage), "title", displayTitle(job), "err", snap.Error)
-		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "failed", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Error: snap.Error, Elapsed: snap.Elapsed})
+		ev := m.event(job, "failed")
+		ev.Error, ev.Elapsed = snap.Error, snap.Elapsed
+		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case StageSkipped:
 		_ = os.RemoveAll(workDir)
 		log.Info("skipped", "label", snap.Label)
-		job.rt.notifier.Send(context.WithoutCancel(ctx), notify.Event{Type: "skipped", Drive: snap.Drive, Label: snap.Label, Title: displayTitle(job), Error: snap.Message})
+		ev := m.event(job, "skipped")
+		ev.Error = snap.Message
+		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	}
 	if err := m.deps.Store.AppendHistory(historyRecord(snap)); err != nil {
 		log.Warn("write history", "err", err)
@@ -795,6 +802,9 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			return false
 		}
 		log.Info("ejected", "stage", snap.Stage)
+		if snap.Stage == StageDone {
+			job.rt.notifier.Send(context.WithoutCancel(ctx), m.event(job, "ready"))
+		}
 	}
 	return eject
 }
@@ -1316,4 +1326,37 @@ func copyCtx(ctx context.Context, dst io.Writer, src io.Reader, progress func(do
 			return total, rerr
 		}
 	}
+}
+
+// event fills in what every notification about a job carries: the title,
+// the drive, how the disc was matched and what is being ripped.
+func (m *Manager) event(job *Job, typ string) notify.Event {
+	s := job.Snapshot()
+	ev := notify.Event{Type: typ, Drive: s.Drive, DriveName: drive.Model(s.Drive), Label: s.Label, Title: displayTitleSnap(s), Warnings: s.Warnings}
+	if s.Identity != nil && s.Identity.Identified() {
+		ev.Match = "Identified via " + s.Identity.Source
+		if s.Catalog != "" {
+			ev.Match += "; titles from " + s.Catalog
+		}
+	} else if s.Identity != nil {
+		ev.Match = "Not identified; ripping by length"
+	}
+	if s.Selection != nil {
+		for _, p := range s.Selection.Picks {
+			switch {
+			case p.Episode > 0 && p.EpisodeEnd > p.Episode:
+				ev.Items = append(ev.Items, strings.TrimSpace(fmt.Sprintf("S%02dE%02d-E%02d %s", p.Season, p.Episode, p.EpisodeEnd, p.EpisodeTitle)))
+			case p.Episode > 0:
+				ev.Items = append(ev.Items, strings.TrimSpace(fmt.Sprintf("S%02dE%02d %s", p.Season, p.Episode, p.EpisodeTitle)))
+			default:
+				ev.Items = append(ev.Items, fmt.Sprintf("Title %d (%s)", p.Title.ID, p.Title.Duration.Round(time.Minute)))
+			}
+		}
+	}
+	return ev
+}
+
+// TestNotify sends a test message to every configured target.
+func (m *Manager) TestNotify(ctx context.Context) error {
+	return m.rt.Load().notifier.Test(ctx)
 }

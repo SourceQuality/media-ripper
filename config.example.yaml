@@ -191,6 +191,17 @@ notify:
   ntfy_token: ""
   # Optional. Receives a JSON POST per event.
   webhook_url: ""
+  # Optional. Discord: post as a bot or through a channel webhook.
+  # Bot: open Settings → Discord → "Add to Discord" to invite it to a
+  # server, then set its token and the channel id (Discord developer mode:
+  # right-click the channel → Copy Channel ID). Use your own application id
+  # to post as your own bot. Webhook: Channel settings → Integrations →
+  # Webhooks → Copy Webhook URL; no bot needed.
+  discord:
+    application_id: "1556123331047202997"
+    bot_token: ""           # or MR_DISCORD_BOT_TOKEN
+    channel_id: ""          # or MR_DISCORD_CHANNEL_ID
+    webhook_url: ""         # or MR_DISCORD_WEBHOOK_URL
 
 log:
   level: info          # debug | info | warn | error

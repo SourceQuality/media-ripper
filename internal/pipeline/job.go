@@ -81,6 +81,8 @@ type Job struct {
 	Log       []LogLine           `json:"log,omitempty"`
 	Current   int                 `json:"current,omitempty"` // 1-based pick in progress
 	Total     int                 `json:"total,omitempty"`   // number of picks
+	// Catalog names the catalogue entry the titles were taken from.
+	Catalog string `json:"catalog,omitempty"`
 	// Activities are the steps moving data right now. A rip and the
 	// delivery of an earlier title can run at the same time.
 	Activities []Activity `json:"activities,omitempty"`
@@ -235,7 +237,7 @@ func (j *Job) Snapshot() Job {
 		ID: j.ID, Drive: j.Drive, Fingerprint: j.Fingerprint, Label: j.Label, DiscType: j.DiscType,
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
 		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun,
-		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected,
+		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog,
 	}
 	c.Warnings = append([]string(nil), j.Warnings...)
 	c.Activities = append([]Activity(nil), j.Activities...)

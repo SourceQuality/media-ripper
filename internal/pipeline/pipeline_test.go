@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -788,5 +790,55 @@ func TestCatalogFallback(t *testing.T) {
 		if j.Stage != StageDone || len(j.Outputs) != 2 || cat.calls != 1 {
 			t.Fatalf("err=%v: stage=%s outputs=%d calls=%d", cat.err, j.Stage, len(j.Outputs), cat.calls)
 		}
+	}
+}
+
+// A job announces itself, says the tray is free after the rip, then
+// reports completion; each event carries the match and the titles.
+func TestJobNotifications(t *testing.T) {
+	var mu sync.Mutex
+	var events []notify.Event
+	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var ev notify.Event
+		_ = json.NewDecoder(r.Body).Decode(&ev)
+		mu.Lock()
+		events = append(events, ev)
+		mu.Unlock()
+	}))
+	defer hook.Close()
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, Season: 1, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "sonarr",
+		Episodes: []metadata.Episode{{Number: 1, Title: "Pilot"}, {Number: 2, Title: "Two"}}}
+	e := setup(t, tvInfo, fakeProvider{id})
+	e.m.deps.Notifier = &notify.Notifier{WebhookURL: hook.URL}
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	if j := e.waitDone(t); j.Stage != StageDone {
+		t.Fatalf("stage = %s", j.Stage)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		n := len(events)
+		mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var types []string
+	for _, ev := range events {
+		types = append(types, ev.Type)
+	}
+	if strings.Join(types, ",") != "started,ready,done" {
+		t.Fatalf("events = %v", types)
+	}
+	start := events[0]
+	if start.Match != "Identified via sonarr" || len(start.Items) != 2 || start.Items[0] != "S01E01 Pilot" || start.Title != "Friends S01 D1" {
+		t.Fatalf("started event = %+v", start)
 	}
 }
