@@ -88,6 +88,7 @@ mkdir -p "$outdir"
 echo 'PRGC:5017,0,"Saving to MKV file"'
 echo 'PRGV:0,0,65536'
 echo 'PRGV:32768,32768,65536'
+[ -n "$FAKE_SLOW" ] && sleep "$FAKE_SLOW"
 head -c 100000 /dev/zero > "$outdir/Disc_t0${title}.mkv"
 echo 'PRGV:65536,65536,65536'
 echo 'MSG:5004,0,2,"Copy complete. 1 titles saved, 0 failed.","Copy complete. %1 titles saved, %2 failed.","1","0"'
@@ -441,5 +442,40 @@ func TestProgressLogRestartsPerPhase(t *testing.T) {
 		if got := l.due(s.p); got != s.want {
 			t.Errorf("step %d (%+v): due = %v, want %v", i, s.p, got, s.want)
 		}
+	}
+}
+
+// A cancel from the web UI leaves the disc in so it can be rescanned after a
+// settings change; only failures eject.
+func TestCancelKeepsDiscIn(t *testing.T) {
+	e := setup(t, movieInfo, fakeProvider{&metadata.Identity{Kind: metadata.KindMovie, Title: "The Matrix", Year: 1999, Runtime: 136 * time.Minute, Confidence: 1, Source: "test"}})
+	t.Setenv("FAKE_SLOW", "2")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	deadline := time.Now().Add(5 * time.Second)
+	var id string
+	for time.Now().Before(deadline) && id == "" {
+		for _, d := range e.m.Snapshot().Drives {
+			if d.Job != nil && d.Job.Stage == StageRipping {
+				id = d.Job.ID
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if id == "" {
+		t.Fatalf("job never started ripping: %+v", e.m.Snapshot())
+	}
+	if err := e.m.Cancel(id); err != nil {
+		t.Fatal(err)
+	}
+	if j := e.waitDone(t); j.Stage != StageCancelled {
+		t.Fatalf("stage = %s", j.Stage)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := e.drv.ejectCount(); n != 0 {
+		t.Fatalf("cancel ejected the disc (%d ejects)", n)
 	}
 }

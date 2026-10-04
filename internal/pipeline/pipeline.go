@@ -570,6 +570,7 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		} else {
 			job.set(func(j *Job) { j.Ejected = true })
 			job.logf("ejected")
+			log.Info("ejected", "stage", "ripped")
 		}
 	}
 
@@ -651,13 +652,16 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	if snap.Ejected {
 		return true
 	}
+	// A cancel is a person at the web UI, usually about to change settings
+	// and rescan, so the disc stays in. Failures eject for the next disc.
 	eject := (snap.Stage == StageDone || snap.Stage == StageSkipped) && cfg.Eject.OnSuccess ||
-		(snap.Stage == StageFailed || snap.Stage == StageCancelled) && cfg.Eject.OnFailure
+		snap.Stage == StageFailed && cfg.Eject.OnFailure
 	if eject {
 		if err := d.Eject(); err != nil {
 			log.Warn("eject", "err", err)
 			return false
 		}
+		log.Info("ejected", "stage", snap.Stage)
 	}
 	return eject
 }

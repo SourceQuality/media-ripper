@@ -159,6 +159,8 @@ eject:
   # Open the tray as soon as the last title is ripped, before remuxing,
   # delivery and the Radarr/Sonarr import. The drive is free sooner.
   after_rip: true
+  # Open the tray when a rip fails. A cancel from the web UI leaves the disc
+  # in so you can change settings and press Rescan.
   on_failure: true
   close_tray_on_start: false
   # A disc that was ripped before is ejected without ripping. Set true to rip
