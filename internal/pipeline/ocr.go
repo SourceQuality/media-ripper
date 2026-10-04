@@ -13,6 +13,18 @@ import (
 
 // ocrIdentify is the second chance for a disc whose label told us nothing:
 // read the title card of the longest ripped file and confirm by runtime.
+// needsOCR reports whether ocrIdentify will look at the ripped files before
+// they are named, which rules out delivering titles while others still rip.
+func (m *Manager) needsOCR(job *Job) bool {
+	cfg := job.rt.cfg
+	s := job.Snapshot()
+	if !cfg.Metadata.OCR.Enabled || (s.Identity != nil && s.Identity.Identified()) {
+		return false
+	}
+	_, none := job.rt.provider.(metadata.NoneProvider)
+	return !none
+}
+
 func (m *Manager) ocrIdentify(ctx context.Context, job *Job, disc *makemkv.Disc, sel *selector.Selection, files []string) {
 	cfg := job.rt.cfg
 	s := job.Snapshot()

@@ -545,15 +545,68 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	title := displayTitle(job)
 	job.rt.notifier.Send(ctx, notify.Event{Type: "started", Drive: job.Drive, Label: job.Label, Title: title})
 
-	// Rip everything first so the disc can leave the drive as early as
-	// possible; identification, remuxing, delivery and the Radarr/Sonarr
-	// handoff do not need it.
+	// Rip everything before anything else needs the disc so it can leave the
+	// drive as early as possible. When the disc is already identified, each
+	// title is remuxed and delivered in the background while the next one
+	// rips: the drive, the local disk and the network are separate limits.
+	// OCR needs the ripped files before anything is named, so it keeps the
+	// strict order.
 	job.set(func(j *Job) { j.Total = len(sel.Picks) })
 	files := make([]string, len(sel.Picks))
+	finishPick := func(i int) error {
+		file, err := m.postProcess(ctx, job, sel.Picks[i], files[i])
+		if err != nil {
+			return err
+		}
+		return m.deliver(ctx, job, disc, sel.Picks[i], file)
+	}
+
+	var (
+		work  chan int
+		wg    sync.WaitGroup
+		bgMu  sync.Mutex
+		bgErr error
+	)
+	bgFailed := func() error {
+		bgMu.Lock()
+		defer bgMu.Unlock()
+		return bgErr
+	}
+	stopWorker := func() {
+		if work != nil {
+			close(work)
+			wg.Wait()
+			work = nil
+		}
+	}
+	// Runs before the deferred finish, which removes the workspace.
+	defer stopWorker()
+	if !m.needsOCR(job) {
+		work = make(chan int, len(sel.Picks))
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range work {
+				if ctx.Err() != nil || bgFailed() != nil {
+					continue
+				}
+				if err := finishPick(i); err != nil {
+					bgMu.Lock()
+					bgErr = err
+					bgMu.Unlock()
+				}
+			}
+		}()
+	}
+
+	job.set(func(j *Job) { j.ripping = true })
 	for i, pick := range sel.Picks {
 		if ctx.Err() != nil {
 			job.setStage(StageCancelled, "cancelled")
 			return
+		}
+		if err := bgFailed(); err != nil {
+			break
 		}
 		job.set(func(j *Job) { j.Current = i + 1 })
 		file, err := m.ripPick(ctx, job, disc, pick, workDir, i, len(sel.Picks))
@@ -562,8 +615,12 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			return
 		}
 		files[i] = file
+		if work != nil {
+			work <- i
+		}
 	}
-	if cfg.Eject.AfterRip && cfg.Eject.OnSuccess {
+	job.set(func(j *Job) { j.ripping = false })
+	if bgFailed() == nil && cfg.Eject.AfterRip && cfg.Eject.OnSuccess {
 		_ = d.Lock(false)
 		if err := d.Eject(); err != nil {
 			log.Warn("eject", "err", err)
@@ -574,22 +631,28 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		}
 	}
 
-	m.ocrIdentify(ctx, job, disc, sel, files)
-
-	for i, pick := range sel.Picks {
+	if work != nil {
+		stopWorker()
+		if err := bgFailed(); err != nil {
+			m.fail(job, err)
+			return
+		}
 		if ctx.Err() != nil {
 			job.setStage(StageCancelled, "cancelled")
 			return
 		}
-		job.set(func(j *Job) { j.Current = i + 1 })
-		file, err := m.postProcess(ctx, job, pick, files[i])
-		if err != nil {
-			m.fail(job, err)
-			return
-		}
-		if err := m.deliver(ctx, job, disc, pick, file); err != nil {
-			m.fail(job, err)
-			return
+	} else {
+		m.ocrIdentify(ctx, job, disc, sel, files)
+		for i := range sel.Picks {
+			if ctx.Err() != nil {
+				job.setStage(StageCancelled, "cancelled")
+				return
+			}
+			job.set(func(j *Job) { j.Current = i + 1 })
+			if err := finishPick(i); err != nil {
+				m.fail(job, err)
+				return
+			}
 		}
 	}
 	m.arrHandoff(ctx, job)
@@ -920,12 +983,21 @@ func (l *progressLog) due(p makemkv.Progress) bool {
 	return false
 }
 
+// pickName names a pick in progress messages: "S01E03" for an episode,
+// "title 2" otherwise.
+func pickName(p selector.Pick) string {
+	if p.Episode > 0 {
+		return fmt.Sprintf("S%02dE%02d", p.Season, p.Episode)
+	}
+	return fmt.Sprintf("title %d", p.Title.ID)
+}
+
 func (m *Manager) postProcess(ctx context.Context, job *Job, pick selector.Pick, file string) (string, error) {
 	cfg := job.rt.cfg
 	if cfg.PostProcess.Mode == "none" {
 		return file, nil
 	}
-	job.setStage(StagePostProcess, "remuxing")
+	job.stepStage(StagePostProcess, "remuxing "+pickName(pick))
 	res, err := postprocess.Run(ctx, file, mkvTitle(job, pick), postprocess.Options{
 		Mode:          cfg.PostProcess.Mode,
 		Tool:          cfg.PostProcess.Tool,
@@ -967,7 +1039,7 @@ func mkvTitle(job *Job, pick selector.Pick) string {
 
 func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, file string) error {
 	cfg := job.rt.cfg
-	job.setStage(StageDelivering, "copying to library")
+	job.stepStage(StageDelivering, "copying "+pickName(pick)+" to library")
 	s := job.Snapshot()
 	vars := naming.Vars{Label: s.Label, TitleID: pick.Title.ID, Date: s.StartedAt}
 	if v := pick.Title.Video(); v != nil {
