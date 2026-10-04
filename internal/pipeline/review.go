@@ -333,3 +333,46 @@ func (m *Manager) Lookup(ctx context.Context, kind metadata.Kind, q string) ([]L
 	}
 	return out, nil
 }
+
+// DiscordAction carries out a button pressed on a Discord message
+// ("mr:<action>:<argument>") and says what happened, for the message.
+func (m *Manager) DiscordAction(ctx context.Context, customID string) string {
+	parts := strings.SplitN(customID, ":", 3)
+	if len(parts) != 3 || parts[0] != "mr" {
+		return "Unknown button"
+	}
+	action, arg := parts[1], parts[2]
+	switch action {
+	case "approve":
+		j, err := m.ApproveReview(ctx, arg, nil)
+		if err != nil {
+			return "Could not import: " + err.Error()
+		}
+		imported := 0
+		for _, o := range j.Outputs {
+			if o.Import == "imported" {
+				imported++
+			}
+		}
+		if len(j.Warnings) > 0 {
+			return fmt.Sprintf("Imported %d of %d; %s", imported, len(j.Outputs), strings.Join(j.Warnings, "; "))
+		}
+		return fmt.Sprintf("✅ Approved and imported %d title(s)", imported)
+	case "discard":
+		if err := m.DiscardReview(arg); err != nil {
+			return "Could not discard: " + err.Error()
+		}
+		return "Discarded; the files stay in staging"
+	case "cancel":
+		if err := m.Cancel(arg); err != nil {
+			return "Could not cancel: " + err.Error()
+		}
+		return "Cancelled; the disc stays in the drive"
+	case "eject":
+		if err := m.Eject("/dev/" + filepath.Base(arg)); err != nil {
+			return "Could not eject: " + err.Error()
+		}
+		return "Tray opened"
+	}
+	return "Unknown button"
+}

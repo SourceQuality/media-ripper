@@ -218,6 +218,14 @@ notify:
     bot_token: ""           # or MR_DISCORD_BOT_TOKEN
     channel_id: ""          # or MR_DISCORD_CHANNEL_ID
     webhook_url: ""         # or MR_DISCORD_WEBHOOK_URL
+    # Bot messages get buttons: Approve / Discard a disc waiting for review,
+    # Cancel a rip, Eject after a failure. They arrive over the bot's own
+    # connection to Discord; nothing needs to be reachable from outside.
+    # allowed_users limits who may press them (Discord user ids; developer
+    # mode → right-click a user → Copy User ID). Empty: anyone who can see
+    # the channel.
+    buttons: true
+    allowed_users: []
 
 updates:
   # Show a notice in the web UI when a newer release is out (checked twice

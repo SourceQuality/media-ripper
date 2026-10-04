@@ -36,6 +36,9 @@ type Discord struct {
 	BotToken   string
 	ChannelID  string
 	WebhookURL string
+	// Buttons adds actions (approve, discard, cancel, eject) to bot
+	// messages; a running discordbot.Bot handles the presses.
+	Buttons bool
 
 	apiBase string // overridden in tests
 }
@@ -49,6 +52,11 @@ func (d *Discord) send(ctx context.Context, client *http.Client, ev Event) error
 	var req *http.Request
 	var err error
 	if d.BotToken != "" && d.ChannelID != "" {
+		if d.Buttons {
+			if c := components(ev); c != nil {
+				payload["components"] = c
+			}
+		}
 		base := d.apiBase
 		if base == "" {
 			base = "https://discord.com/api/v10"
@@ -174,4 +182,25 @@ func clip(s string) string {
 		cut = maxEmbedTxt
 	}
 	return s[:cut] + "\n…"
+}
+
+// components are the buttons for an event. Their custom ids are read by
+// the bot: "mr:<action>:<job id or drive>".
+func components(ev Event) []any {
+	button := func(style int, label, id string) map[string]any {
+		return map[string]any{"type": 2, "style": style, "label": label, "custom_id": id}
+	}
+	var row []any
+	switch {
+	case ev.Type == "review" && ev.JobID != "":
+		row = []any{button(3, "Approve & import", "mr:approve:"+ev.JobID), button(4, "Discard", "mr:discard:"+ev.JobID)}
+	case ev.Type == "started" && ev.JobID != "":
+		row = []any{button(2, "Cancel", "mr:cancel:"+ev.JobID)}
+	case ev.Type == "failed" && ev.Drive != "":
+		row = []any{button(2, "Eject", "mr:eject:"+strings.TrimPrefix(ev.Drive, "/dev/"))}
+	}
+	if row == nil {
+		return nil
+	}
+	return []any{map[string]any{"type": 1, "components": row}}
 }

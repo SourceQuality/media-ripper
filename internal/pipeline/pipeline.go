@@ -177,7 +177,8 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 	}
 	if rt.notifier == nil {
 		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log,
-			Discord: &notify.Discord{BotToken: cfg.Notify.Discord.BotToken, ChannelID: cfg.Notify.Discord.ChannelID, WebhookURL: cfg.Notify.Discord.WebhookURL}}
+			Discord: &notify.Discord{BotToken: cfg.Notify.Discord.BotToken, ChannelID: cfg.Notify.Discord.ChannelID, WebhookURL: cfg.Notify.Discord.WebhookURL,
+				Buttons: cfg.Notify.Discord.Buttons}}
 	}
 	return rt
 }
@@ -1395,7 +1396,7 @@ func copyCtx(ctx context.Context, dst io.Writer, src io.Reader, progress func(do
 // the drive, how the disc was matched and what is being ripped.
 func (m *Manager) event(job *Job, typ string) notify.Event {
 	s := job.Snapshot()
-	ev := notify.Event{Type: typ, Drive: s.Drive, DriveName: drive.Model(s.Drive), Label: s.Label, Title: displayTitleSnap(s), Warnings: s.Warnings}
+	ev := notify.Event{Type: typ, JobID: s.ID, Drive: s.Drive, DriveName: drive.Model(s.Drive), Label: s.Label, Title: displayTitleSnap(s), Warnings: s.Warnings}
 	ev.Match = verification(s)
 	if s.Selection != nil {
 		for _, p := range s.Selection.Picks {

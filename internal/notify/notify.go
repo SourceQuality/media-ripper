@@ -25,7 +25,8 @@ type Notifier struct {
 
 // Event is what gets sent.
 type Event struct {
-	Type  string `json:"type"` // started | ready | done | failed | skipped | test
+	Type  string `json:"type"` // started | ready | done | failed | skipped | review | storage | test
+	JobID string `json:"job_id,omitempty"`
 	Drive string `json:"drive"`
 	// DriveName is the drive model, e.g. "HL-DT-ST BD-RE BU40N".
 	DriveName string `json:"drive_name,omitempty"`

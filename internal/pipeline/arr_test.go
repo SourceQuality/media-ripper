@@ -497,3 +497,33 @@ func TestNeedsReview(t *testing.T) {
 		}
 	}
 }
+
+// Buttons pressed in Discord drive the same actions as the web UI.
+func TestDiscordActions(t *testing.T) {
+	e, root := sonarrEnv(t, sonarrOpts{})
+	e.cfg.Arr.ImportPolicy = PolicyConfident
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+	j := e.waitDone(t)
+	if j.Stage != StageReview {
+		t.Fatalf("stage = %s", j.Stage)
+	}
+	if got := e.m.DiscordAction(ctx, "mr:approve:"+j.ID); !strings.HasPrefix(got, "✅ Approved and imported 2") {
+		t.Fatalf("approve: %q", got)
+	}
+	if files, _ := filepath.Glob(filepath.Join(root, "Friends (1994)", "*.mkv")); len(files) != 2 {
+		t.Fatalf("imported %v", files)
+	}
+	if got := e.m.DiscordAction(ctx, "mr:approve:"+j.ID); !strings.Contains(got, "no such review") {
+		t.Fatalf("second approve: %q", got)
+	}
+	if got := e.m.DiscordAction(ctx, "mr:eject:fake0"); got != "Tray opened" {
+		t.Fatalf("eject: %q", got)
+	}
+	if got := e.m.DiscordAction(ctx, "nonsense"); got != "Unknown button" {
+		t.Fatalf("unknown: %q", got)
+	}
+}

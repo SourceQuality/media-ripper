@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/config"
+	"github.com/sourcequality/media-ripper/internal/discordbot"
 	"github.com/sourcequality/media-ripper/internal/drive"
 	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
@@ -173,6 +174,15 @@ func runDaemon(cfgPath string) error {
 			_ = hs.Shutdown(sctx)
 		}()
 		log.Info("web ui", "listen", cfg.Web.Listen)
+	}
+	// Buttons on Discord messages arrive over the bot's Gateway connection.
+	if d := cfg.Notify.Discord; d.Buttons && d.BotToken != "" {
+		bot := &discordbot.Bot{Token: d.BotToken, AppID: d.ApplicationID, Allowed: d.AllowedUsers, Logger: log,
+			Handle: func(ctx context.Context, in discordbot.Interaction) string {
+				log.Info("discord button", "action", in.CustomID, "user", in.UserName)
+				return m.DiscordAction(ctx, in.CustomID)
+			}}
+		go bot.Run(ctx)
 	}
 	log.Info("media-ripper started", "version", version, "output", cfg.Output.Path, "drives", cfg.Drives)
 	err = m.Run(ctx)

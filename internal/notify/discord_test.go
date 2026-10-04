@@ -123,3 +123,40 @@ func TestClipLongLists(t *testing.T) {
 		t.Fatalf("clip len %d", len(got))
 	}
 }
+
+func TestButtonsOnBotMessages(t *testing.T) {
+	srv, got := discordServer(t, 200)
+	n := &Notifier{Discord: &Discord{BotToken: "tok", ChannelID: "1", Buttons: true, apiBase: srv.URL}}
+	n.Send(context.Background(), Event{Type: "review", JobID: "20261004-010000-001", Title: "The Twilight Zone S01 D3"})
+	n.Send(context.Background(), Event{Type: "started", JobID: "j2", Title: "x"})
+	n.Send(context.Background(), Event{Type: "failed", Drive: "/dev/sr0", Title: "x"})
+	n.Send(context.Background(), Event{Type: "done", JobID: "j3", Title: "x"})
+	ids := func(i int) []string {
+		var out []string
+		rows, _ := got.body[i]["components"].([]any)
+		for _, r := range rows {
+			for _, c := range r.(map[string]any)["components"].([]any) {
+				out = append(out, c.(map[string]any)["custom_id"].(string))
+			}
+		}
+		return out
+	}
+	if g := strings.Join(ids(0), ","); g != "mr:approve:20261004-010000-001,mr:discard:20261004-010000-001" {
+		t.Fatalf("review buttons = %s", g)
+	}
+	if g := strings.Join(ids(1), ","); g != "mr:cancel:j2" {
+		t.Fatalf("started buttons = %s", g)
+	}
+	if g := strings.Join(ids(2), ","); g != "mr:eject:sr0" {
+		t.Fatalf("failed buttons = %s", g)
+	}
+	if len(ids(3)) != 0 {
+		t.Fatal("done messages have no buttons")
+	}
+	// A webhook message cannot carry working buttons.
+	hook, hookGot := discordServer(t, 204)
+	(&Notifier{Discord: &Discord{WebhookURL: hook.URL, Buttons: true}}).Send(context.Background(), Event{Type: "review", JobID: "x", Title: "x"})
+	if _, ok := hookGot.body[0]["components"]; ok {
+		t.Fatal("webhook message with buttons")
+	}
+}
