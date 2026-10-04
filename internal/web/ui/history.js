@@ -118,7 +118,7 @@
       <div class="card"><h2>Every title on the disc</h2>
         <div class="table-wrap"><table class="titles"><thead><tr><th>Source</th><th>Length</th><th>Size</th><th>Tracks</th><th>What it is</th><th>File</th></tr></thead><tbody>${titles || '<tr><td colspan="6" class="empty">No scan recorded</td></tr>'}</tbody></table></div>
       </div>
-      ${terminal(j.stage) ? folderCard(id, folder) : ''}
+      ${terminal(j.stage) || j.ejected ? folderCard(id, folder) : ''}
       ${filesCard()}
       ${(j.log || []).length ? `<div class="card"><h2>Log</h2><pre class="log">${esc(j.log.map(l => `${new Date(l.time).toLocaleTimeString()}  ${l.message}`).join('\n'))}</pre></div>` : ''}`;
       const det = $('#files');
@@ -159,7 +159,8 @@
     fetch('/api/history?limit=500').then(r => r.json()).catch(() => []),
     fetch('/api/status').then(r => r.json()).catch(() => ({})),
   ]).then(([h, s]) => {
-    const live = ((s && s.drives) || []).map(d => d.job).filter(j => j && !terminal(j.stage));
+    // On a drive, or carried on after a restart without its disc.
+    const live = [...((s && s.drives) || []).map(d => d.job), ...((s && s.finishing) || [])].filter(j => j && !terminal(j.stage));
     const done = Array.isArray(h) ? h : [];
     all = [...live, ...done.filter(j => !live.some(l => l.id === j.id))];
     route();
