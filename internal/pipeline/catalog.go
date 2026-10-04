@@ -63,6 +63,14 @@ func (m *Manager) useMatch(job *Job, match *discdb.Match) map[int]selector.Catal
 		j.Catalog = fmt.Sprintf("TheDiscDB (%s, %s)", releaseName(match.Release), match.Disc.Name)
 		j.CatalogMatched, j.CatalogCompared = match.Matched, match.Compared
 		j.HashMatched = sameDisc
+		if j.Identity != nil {
+			kind := "movie"
+			if j.Identity.Kind == metadata.KindTV {
+				kind = "series"
+			}
+			j.CatalogDisc = &CatalogDisc{Kind: kind, Title: j.Identity.Title, Year: j.Identity.Year, Release: match.Release,
+				Index: match.Disc.Index, Name: match.Disc.Name, Slug: match.Disc.Slug}
+		}
 	})
 	entries := map[int]selector.CatalogEntry{}
 	for tid, t := range match.ByID {
@@ -130,8 +138,13 @@ func releaseName(slug string) string {
 			i++
 			continue
 		}
-		if w != "" {
-			w = strings.ToUpper(w[:1]) + w[1:]
+		switch strings.ToLower(w) {
+		case "dvd", "uhd", "4k", "hd":
+			w = strings.ToUpper(w)
+		default:
+			if w != "" {
+				w = strings.ToUpper(w[:1]) + w[1:]
+			}
 		}
 		out = append(out, w)
 	}

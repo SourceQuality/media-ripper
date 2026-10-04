@@ -320,6 +320,17 @@
     };
   };
 
+  // Box sets in progress: which discs of each catalogued release are done.
+  const renderBoxSets = sets => {
+    $('#boxsets').innerHTML = sets.length ? `<h2>Box sets</h2>${sets.map(b => `<div class="card boxset">
+      <div class="row"><span class="title">${esc(b.title)}${b.year ? ` (${b.year})` : ''}</span><span class="muted">${esc(b.release_name)}</span><span class="spacer"></span>
+        <span class="muted">${b.total ? `${b.ripped} of ${plural(b.total, 'disc')}` : plural(b.ripped, 'disc') + ' ripped'}</span></div>
+      ${b.groups.map(g => `<div class="group"><span class="gname">${esc(g.name)}</span><span class="chips">${g.discs.map(d =>
+        `<span class="chip ${d.ripped ? 'ok' : 'missing'}" title="${esc(d.name)}${d.ripped ? ' · ripped ' + esc(fmtWhen(d.at)) : ' · not ripped yet'}">${esc(d.short)}${d.ripped ? ' ✓' : ''}</span>`).join('')}</span>
+        <span class="muted">${g.discs.filter(d => d.ripped).length}/${g.discs.length}</span></div>`).join('')}
+    </div>`).join('')}` : '';
+  };
+
   const render = s => {
     $('#version').textContent = s.version || '';
     $('#notices').innerHTML = notices(s);
@@ -328,12 +339,17 @@
     renderRecent();
   };
 
+  // Box sets change only when a disc finishes; refresh them every 30 s.
+  let boxSetsAt = 0;
+  const boxSetsDue = () => { if (Date.now() - boxSetsAt < 30000) return false; boxSetsAt = Date.now(); return true; };
+
   let timer;
   const refresh = () => Promise.all([
     fetch('/api/status').then(r => r.json()),
     fetch('/api/history?limit=25').then(r => r.json()).catch(() => history),
     fetch('/api/reviews').then(r => r.json()).catch(() => null),
-  ]).then(([s, h, rv]) => { history = Array.isArray(h) ? h : []; render(s); if (Array.isArray(rv)) renderReviews(rv); }).catch(() => {})
+    boxSetsDue() ? fetch('/api/boxsets').then(r => r.json()).catch(() => null) : null,
+  ]).then(([s, h, rv, bs]) => { history = Array.isArray(h) ? h : []; render(s); if (Array.isArray(rv)) renderReviews(rv); if (Array.isArray(bs)) renderBoxSets(bs); }).catch(() => {})
     .finally(() => { clearTimeout(timer); timer = setTimeout(refresh, document.hidden ? 10000 : 2000); });
   document.addEventListener('visibilitychange', refresh);
   refresh();

@@ -223,3 +223,15 @@ func TestFindByHash(t *testing.T) {
 		t.Fatalf("uncatalogued: %+v %v", m, err)
 	}
 }
+
+func TestReleaseDiscs(t *testing.T) {
+	f := newFakeGitHub(t)
+	c := f.client(t.TempDir())
+	discs, err := c.ReleaseDiscs(context.Background(), Series, "The Twilight Zone", 1959, "the-complete-series-blu-ray-2021")
+	if err != nil || len(discs) != 2 || discs[0].Name != "Season 1 Disc 1" || discs[1].Slug != "S01D02" {
+		t.Fatalf("discs = %+v %v", discs, err)
+	}
+	if discs, _ := c.ReleaseDiscs(context.Background(), Series, "The Twilight Zone", 1959, "nope"); len(discs) != 0 {
+		t.Fatalf("unknown release: %+v", discs)
+	}
+}

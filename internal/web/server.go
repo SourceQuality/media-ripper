@@ -63,6 +63,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reviews/{id}/approve", s.approveReview)
 	mux.HandleFunc("POST /api/reviews/{id}/discard", s.discardReview)
 	mux.HandleFunc("GET /api/lookup", s.lookup)
+	mux.HandleFunc("GET /api/boxsets", s.boxSets)
 	return logRequests(mux, s.Logger)
 }
 
@@ -355,4 +356,12 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) boxSets(w http.ResponseWriter, r *http.Request) {
+	sets := s.Manager.BoxSets(r.Context())
+	if sets == nil {
+		sets = []pipeline.BoxSetView{}
+	}
+	writeJSON(w, http.StatusOK, sets)
 }
