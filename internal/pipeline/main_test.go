@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"testing"
+	"time"
 )
 
 // TestMain gives the tests a throwaway home directory. Applying a config
@@ -16,6 +17,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 	os.Setenv("HOME", home)
+	// The fakes move files at once; the real wait covers NFS caching.
+	stagedWait, stagedPoll = 2*time.Second, 20*time.Millisecond
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)
