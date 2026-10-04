@@ -129,6 +129,12 @@
       { key: 'notify.discord.allowed_users', label: 'Who may press them', type: 'lines', hint: 'Discord user ids, one per line; empty = anyone who can see the channel' },
       { key: 'discord.test', label: 'Check it', type: 'action', action: 'test-notify', text: 'Send test message', hint: 'Uses the saved settings: save first' },
     ]},
+    { title: 'Sign-in', fields: [
+      { key: 'auth.enabled', label: 'Require sign-in', type: 'bool', hint: 'Only turn this off on a network nobody else can reach' },
+      { key: 'auth.username', label: 'User name', type: 'text' },
+      { key: 'auth.password', label: 'Change password', type: 'password-change', wide: true },
+      { key: 'auth.token', label: 'API token', type: 'api-token', wide: true, hint: 'For Prometheus (/metrics) and scripts: Authorization: Bearer <token>. Shown once.' },
+    ]},
     { title: 'Updates', fields: [
       { key: 'updates.check', label: 'Tell me about new releases', type: 'bool' },
       { key: 'updates.repo', label: 'Repository', type: 'text', hint: 'GitHub owner/name' },
@@ -144,7 +150,7 @@
   // Send Messages + Embed Links (19456).
   const DEFAULT_DISCORD_APP = '1556123331047202997';
   const inviteURL = appID => `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent((appID || '').trim() || DEFAULT_DISCORD_APP)}&scope=bot&permissions=19456`;
-  const NON_DATA = new Set(['invite', 'action']);
+  const NON_DATA = new Set(['invite', 'action', 'password-change', 'api-token']);
 
   const get = (obj, key) => key.split('.').reduce((o, k) => (o == null ? undefined : o[k]), obj);
   const set = (obj, key, val) => { const ks = key.split('.'); let o = obj; for (const k of ks.slice(0, -1)) { o[k] = o[k] || {}; o = o[k]; } o[ks.at(-1)] = val; };
@@ -163,6 +169,10 @@
       case 'secret': { const isSet = state.secrets[f.key]; return `<span class="secret"><input type="password" id="${id(f.key)}" placeholder="${isSet ? '••••••••' : ''}"${dis}>${isSet && !locked ? `<button type="button" class="clear" data-key="${f.key}">Clear</button>` : ''}</span>`; }
       case 'invite': return `<a class="btn" id="${id(f.key)}" href="${inviteURL(get(state.config, 'notify.discord.application_id'))}" target="_blank" rel="noopener">Add to Discord</a>`;
       case 'action': return `<span class="row"><button type="button" id="${id(f.key)}" data-action="${f.action}">${f.text}</button><span class="hint" id="${id(f.key)}-status"></span></span>`;
+      case 'password-change': return `<span class="row"><input type="password" id="pw-current" placeholder="Current password" autocomplete="current-password">
+        <input type="password" id="pw-new" placeholder="New password (8+ characters)" autocomplete="new-password"><button type="button" id="pw-save">Change</button><span class="hint" id="pw-status"></span></span>`;
+      case 'api-token': return `<span class="row"><button type="button" id="tok-new">${state.secrets['auth.api_token_hash'] ? 'Replace token' : 'Create token'}</button>
+        ${state.secrets['auth.api_token_hash'] ? '<button type="button" id="tok-revoke">Revoke</button>' : ''}<code id="tok-value"></code></span>`;
       case 'number': return `<input type="number" step="1" id="${id(f.key)}" value="${value ?? ''}"${dis}>`;
       case 'float': return `<input type="number" step="0.01" min="0" max="1" id="${id(f.key)}" value="${value ?? ''}"${dis}>`;
       default: return `<input type="text" id="${id(f.key)}" value="${String(value ?? '').replace(/"/g, '&quot;')}"${dis}>`;
@@ -192,6 +202,23 @@
         .catch(e => { out.textContent = e.message; })
         .finally(() => { b.disabled = false; });
     });
+    const post = (url, body, method = 'POST') => fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+      .then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
+    const pwSave = document.getElementById('pw-save');
+    if (pwSave) pwSave.onclick = () => {
+      const out = document.getElementById('pw-status');
+      post('/api/auth/password', { current: document.getElementById('pw-current').value, password: document.getElementById('pw-new').value })
+        .then(() => { out.textContent = 'Changed; other browsers are signed out'; document.getElementById('pw-current').value = ''; document.getElementById('pw-new').value = ''; })
+        .catch(e => { out.textContent = e.message; });
+    };
+    const tokNew = document.getElementById('tok-new');
+    if (tokNew) tokNew.onclick = () => {
+      if (state.secrets['auth.api_token_hash'] && !confirm('Replace the token? Anything using the old one stops working.')) return;
+      post('/api/auth/token').then(j => { document.getElementById('tok-value').textContent = j.token + '  (copy it now; it is not shown again)'; state.secrets['auth.api_token_hash'] = true; })
+        .catch(e => { document.getElementById('tok-value').textContent = e.message; });
+    };
+    const tokRevoke = document.getElementById('tok-revoke');
+    if (tokRevoke) tokRevoke.onclick = () => post('/api/auth/token', null, 'DELETE').then(load);
     document.querySelectorAll('button.clear').forEach(b => b.onclick = () => {
       clearSecrets.add(b.dataset.key);
       b.previousElementSibling.placeholder = '';

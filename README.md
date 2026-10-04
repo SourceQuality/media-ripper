@@ -51,7 +51,8 @@ include it.
    `check` prints the MakeMKV version and the drive's state, and fails with
    the reason if MakeMKV's key or beta has expired.
 
-5. **Open** `http://<this machine>:8080` and insert a disc.
+5. **Open** `http://<this machine>:8080`, create your account (the first
+   visit asks for a user name and password), and insert a disc.
 
 To update, download the new binary, install it over the old one and
 `sudo systemctl restart media-ripper`. A disc in the middle of a rip
@@ -248,9 +249,25 @@ State lives in `workspace/state/`: `history.jsonl`, `discs.json` (ripped
 fingerprints) and `series.json` (next episode per season). All plain JSON;
 delete an entry to make the daemon forget it.
 
+## Sign-in
+
+The web UI and API need a sign-in. The first visit asks you to create the
+account; until then nothing else is reachable. Passwords are stored only as
+PBKDF2-SHA256 hashes (600,000 iterations), sessions are signed cookies
+(HttpOnly, SameSite=Strict, 30 days), changing the password signs out every
+other browser, and repeated wrong passwords make that address wait (15 s,
+doubling to 5 minutes).
+
+- **Locked out?** `sudo -u media-ripper media-ripper passwd -config
+  /etc/media-ripper/config.yaml` sets a new password, then restart the service.
+- **Scripts and Prometheus** use an API token from Settings → Sign-in, sent
+  as `Authorization: Bearer <token>`. It is shown once; only its hash is kept.
+- `auth.enabled: false` turns sign-in off. Only do that on a network nobody
+  else can reach.
+
 ## Metrics
 
-`GET /metrics` serves Prometheus text: discs by result, titles delivered
+`GET /metrics` (with an API token, see Sign-in) serves Prometheus text: discs by result, titles delivered
 and imported, bytes and hours delivered, verified discs, reviews waiting,
 drive activity and speeds, and the library storage's state, probe time and
 free space. `GET /api/stats` has the same totals as JSON; the History page

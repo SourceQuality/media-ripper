@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · Media Ripper</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%236b7cff'/%3E%3Ccircle cx='12' cy='12' r='3' fill='%23fff'/%3E%3C/svg%3E">
+</head>
+<body>
+<header>
+  <h1>Media Ripper</h1>
+  <div class="spacer"></div>
+  <button id="theme" class="icon" title="Theme" aria-label="Toggle theme">◐</button>
+</header>
+<main class="login-page">
+  <form id="login" class="card" autocomplete="on">
+    <h2 id="heading">Sign in</h2>
+    <p id="intro" class="muted"></p>
+    <label class="field"><span class="name">User name</span><input id="username" name="username" autocomplete="username" required></label>
+    <label class="field"><span class="name">Password</span><input id="password" name="password" type="password" autocomplete="current-password" required></label>
+    <label class="field hidden" id="confirm-row"><span class="name">Password again</span><input id="confirm" type="password" autocomplete="new-password"></label>
+    <div class="row"><span id="message" class="muted"></span><span class="spacer"></span><button class="primary" id="submit" type="submit">Sign in</button></div>
+  </form>
+</main>
+<script src="theme.js"></script>
+<script src="login.js"></script>
+</body>
+</html>

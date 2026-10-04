@@ -19,6 +19,7 @@ import (
 func TestHandlers(t *testing.T) {
 	cfg := config.Default()
 	cfg.Output.Path = t.TempDir()
+	cfg.Auth.Enabled = false // sign-in has its own tests
 	cfg.Metadata.TMDBAPIKey = "sk-hidden-123"
 	st, err := store.Open(t.TempDir())
 	if err != nil {
@@ -65,6 +66,7 @@ func TestHandlers(t *testing.T) {
 func TestPutConfig(t *testing.T) {
 	cfg := config.Default()
 	cfg.Output.Path = t.TempDir()
+	cfg.Auth.Enabled = false // sign-in has its own tests
 	cfg.Path = filepath.Join(t.TempDir(), "config.yaml")
 	cfg.MakeMKV.Key = "KEEP-ME"
 	st, _ := store.Open(t.TempDir())
@@ -141,6 +143,7 @@ func TestDiscordSettingsAndTest(t *testing.T) {
 	defer discord.Close()
 	cfg := config.Default()
 	cfg.Output.Path = t.TempDir()
+	cfg.Auth.Enabled = false // sign-in has its own tests
 	cfg.Notify.Discord.BotToken = "bot-token-secret"
 	cfg.Notify.Discord.WebhookURL = discord.URL + "/api/webhooks/1/hook-secret"
 	st, _ := store.Open(t.TempDir())
@@ -174,6 +177,7 @@ func TestDiscordSettingsAndTest(t *testing.T) {
 func TestJobFromHistoryAfterRestart(t *testing.T) {
 	cfg := config.Default()
 	cfg.Output.Path = t.TempDir()
+	cfg.Auth.Enabled = false // sign-in has its own tests
 	st, _ := store.Open(t.TempDir())
 	if err := st.AppendHistory(map[string]any{"id": "20261003-203139-343", "label": "TWILIGHT_ZONE_SEASON1_DISC1", "stage": "done"}); err != nil {
 		t.Fatal(err)
@@ -197,6 +201,7 @@ func TestJobFromHistoryAfterRestart(t *testing.T) {
 func TestReviewEndpoints(t *testing.T) {
 	cfg := config.Default()
 	cfg.Output.Path = t.TempDir()
+	cfg.Auth.Enabled = false // sign-in has its own tests
 	st, _ := store.Open(t.TempDir())
 	_ = st.SaveReview("20261003-230000-001", map[string]any{"id": "20261003-230000-001", "label": "TWILIGHT_ZONE_SEASON1_DISC3", "stage": "review"})
 	m := pipeline.New(pipeline.Deps{Config: &cfg, Store: st})
@@ -230,6 +235,7 @@ func TestReviewEndpoints(t *testing.T) {
 func TestMetricsAndStats(t *testing.T) {
 	cfg := config.Default()
 	cfg.Output.Path = t.TempDir()
+	cfg.Auth.Enabled = false // sign-in has its own tests
 	st, _ := store.Open(t.TempDir())
 	_ = st.AppendHistory(map[string]any{"id": "a", "stage": "done", "elapsed": "1h0m0s", "catalog_matched": 8, "catalog_compared": 8,
 		"outputs": []any{map[string]any{"path": "x", "size": 4_000_000_000, "duration": int64(1500e9), "import": "imported"}, map[string]any{"path": "y", "size": 1_000_000_000, "duration": int64(1500e9)}}})

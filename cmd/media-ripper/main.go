@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sourcequality/media-ripper/internal/auth"
 	"github.com/sourcequality/media-ripper/internal/config"
 	"github.com/sourcequality/media-ripper/internal/discordbot"
 	"github.com/sourcequality/media-ripper/internal/drive"
@@ -40,6 +42,7 @@ Usage:
   media-ripper check  [-config FILE]            validate config and required tools
   media-ripper eject  [DEVICE]                  open the tray
   media-ripper label  [DEVICE]                  print the disc label and fingerprint
+  media-ripper passwd [-config FILE] [-user NAME]  set the web UI sign-in password
   media-ripper version
 
 Config file: -config FILE, $MR_CONFIG, /etc/media-ripper/config.yaml, ./config.yaml
@@ -56,6 +59,7 @@ func main() {
 	fs.Usage = usage
 	cfgPath := fs.String("config", "", "config file")
 	jsonOut := fs.Bool("json", false, "json output (scan, label)")
+	userName := fs.String("user", "", "user name (passwd)")
 	_ = fs.Parse(args)
 
 	var err error
@@ -70,6 +74,8 @@ func main() {
 		err = runEject(fs.Arg(0))
 	case "label":
 		err = runLabel(fs.Arg(0), *jsonOut)
+	case "passwd":
+		err = runPasswd(*cfgPath, *userName)
 	case "version":
 		fmt.Println(version)
 	case "help", "-h", "--help":
@@ -341,4 +347,74 @@ func pickDevice(device string) string {
 		return d[0]
 	}
 	return "/dev/sr0"
+}
+
+// runPasswd sets the web UI account from the command line, for the first
+// account on a headless install or when the password is lost. The
+// password is read from the terminal without echo, or from stdin.
+func runPasswd(cfgPath, user string) error {
+	path := findConfig(cfgPath)
+	if path == "" {
+		path = config.DefaultPath()
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	if user == "" {
+		user = cfg.Auth.Username
+	}
+	if user == "" {
+		return errors.New("no account yet: give the user name with -user NAME")
+	}
+	pw, err := readPassword("New password for " + user + ": ")
+	if err != nil {
+		return err
+	}
+	if term := isTerminal(); term {
+		again, err := readPassword("Again: ")
+		if err != nil {
+			return err
+		}
+		if again != pw {
+			return errors.New("the passwords do not match")
+		}
+	}
+	hash, err := auth.HashPassword(pw)
+	if err != nil {
+		return err
+	}
+	cfg.Auth.Username, cfg.Auth.PasswordHash, cfg.Auth.Enabled = user, hash, true
+	if err := cfg.Save(path); err != nil {
+		return err
+	}
+	fmt.Printf("Password set for %s in %s. A running service picks it up after: systemctl restart media-ripper\n", user, path)
+	return nil
+}
+
+func isTerminal() bool {
+	st, err := os.Stdin.Stat()
+	return err == nil && st.Mode()&os.ModeCharDevice != 0
+}
+
+// readPassword reads one line; on a terminal the typing is hidden (stty).
+func readPassword(prompt string) (string, error) {
+	if isTerminal() {
+		fmt.Fprint(os.Stderr, prompt)
+		off := exec.Command("stty", "-echo")
+		off.Stdin = os.Stdin
+		if off.Run() == nil {
+			defer func() {
+				on := exec.Command("stty", "echo")
+				on.Stdin = os.Stdin
+				_ = on.Run()
+				fmt.Fprintln(os.Stderr)
+			}()
+		}
+	}
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return "", errors.New("no password given")
+	}
+	return strings.TrimRight(line, "\r\n"), nil
 }
