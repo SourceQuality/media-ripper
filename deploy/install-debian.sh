@@ -51,8 +51,10 @@ fi
 # --- user, dirs, config, service ---------------------------------------------
 id media-ripper >/dev/null 2>&1 || useradd --system --home-dir /var/lib/media-ripper --shell /usr/sbin/nologin --groups cdrom media-ripper
 install -d -o media-ripper -g media-ripper -m 0775 /var/lib/media-ripper
-install -d -m 0755 /etc/media-ripper
-[ -f /etc/media-ripper/config.yaml ] || install -m 0640 -g media-ripper "$HERE/config.example.yaml" /etc/media-ripper/config.yaml
+# The service owns its config directory so the settings page can save.
+install -d -o media-ripper -g media-ripper -m 0750 /etc/media-ripper
+[ -f /etc/media-ripper/config.yaml ] || install -m 0640 -o media-ripper -g media-ripper "$HERE/config.example.yaml" /etc/media-ripper/config.yaml
+chown media-ripper:media-ripper /etc/media-ripper/config.yaml
 install -m 0644 "$HERE/deploy/99-media-ripper.rules" /etc/udev/rules.d/99-media-ripper.rules
 udevadm control --reload && udevadm trigger || true
 install -m 0644 "$HERE/deploy/media-ripper.service" /etc/systemd/system/media-ripper.service

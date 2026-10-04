@@ -24,6 +24,8 @@ IOSchedulingPriority=4
 # Hardening that still allows device access and the library mount.
 NoNewPrivileges=true
 ProtectSystem=full
+# The settings page saves config.yaml here (write to a temp file, then rename).
+ReadWritePaths=/etc/media-ripper
 ProtectHome=true
 PrivateTmp=true
 
