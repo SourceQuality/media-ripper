@@ -49,7 +49,7 @@ tr:last-child td { border-bottom: 0; }
 td.actions { text-align: right; white-space: nowrap; }
 .empty { color: var(--muted); padding: 24px; text-align: center; }
 /* recent discs */
-.history .sub { font-size: 13px; margin-top: 4px; }
+.history .sub, .verify { font-size: 13px; margin-top: 4px; }
 .history .outcome { margin-top: 6px; font-size: 14px; }
 .history .outcome.failed { color: var(--bad); } .history .outcome.cancelled, .history .outcome.skipped { color: var(--muted); }
 .badge { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; font-size: 13px; font-weight: 700; color: #fff; background: var(--muted); flex: none; }

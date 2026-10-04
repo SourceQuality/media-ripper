@@ -810,28 +810,31 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 }
 
 type historyEntry struct {
-	ID         string              `json:"id"`
-	Drive      string              `json:"drive"`
-	Label      string              `json:"label"`
-	Title      string              `json:"title"`
-	Kind       string              `json:"kind"`
-	Stage      Stage               `json:"stage"`
-	Error      string              `json:"error,omitempty"`
-	Outputs    []Output            `json:"outputs,omitempty"`
-	StartedAt  time.Time           `json:"started_at"`
-	FinishedAt time.Time           `json:"finished_at"`
-	Elapsed    string              `json:"elapsed"`
-	Identity   *metadata.Identity  `json:"identity,omitempty"`
-	Selection  *selector.Selection `json:"selection,omitempty"`
-	Titles     []TitleSummary      `json:"titles,omitempty"`
-	Catalog    string              `json:"catalog,omitempty"`
-	Warnings   []string            `json:"warnings,omitempty"`
+	ID           string              `json:"id"`
+	Drive        string              `json:"drive"`
+	Label        string              `json:"label"`
+	Title        string              `json:"title"`
+	Kind         string              `json:"kind"`
+	Stage        Stage               `json:"stage"`
+	Error        string              `json:"error,omitempty"`
+	Outputs      []Output            `json:"outputs,omitempty"`
+	StartedAt    time.Time           `json:"started_at"`
+	FinishedAt   time.Time           `json:"finished_at"`
+	Elapsed      string              `json:"elapsed"`
+	Identity     *metadata.Identity  `json:"identity,omitempty"`
+	Selection    *selector.Selection `json:"selection,omitempty"`
+	Titles       []TitleSummary      `json:"titles,omitempty"`
+	Catalog      string              `json:"catalog,omitempty"`
+	Matched      int                 `json:"catalog_matched,omitempty"`
+	Compared     int                 `json:"catalog_compared,omitempty"`
+	Verification string              `json:"verification,omitempty"`
+	Warnings     []string            `json:"warnings,omitempty"`
 }
 
 func historyRecord(s Job) historyEntry {
 	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
 		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles,
-		Catalog: s.Catalog, Warnings: s.Warnings}
+		Catalog: s.Catalog, Matched: s.CatalogMatched, Compared: s.CatalogCompared, Verification: s.Verification, Warnings: s.Warnings}
 	if s.Identity != nil {
 		h.Kind = string(s.Identity.Kind)
 	}
@@ -1336,14 +1339,7 @@ func copyCtx(ctx context.Context, dst io.Writer, src io.Reader, progress func(do
 func (m *Manager) event(job *Job, typ string) notify.Event {
 	s := job.Snapshot()
 	ev := notify.Event{Type: typ, Drive: s.Drive, DriveName: drive.Model(s.Drive), Label: s.Label, Title: displayTitleSnap(s), Warnings: s.Warnings}
-	if s.Identity != nil && s.Identity.Identified() {
-		ev.Match = "Identified via " + s.Identity.Source
-		if s.Catalog != "" {
-			ev.Match += "; titles from " + s.Catalog
-		}
-	} else if s.Identity != nil {
-		ev.Match = "Not identified; ripping by length"
-	}
+	ev.Match = verification(s)
 	if s.Selection != nil {
 		for _, p := range s.Selection.Picks {
 			switch {
@@ -1362,4 +1358,54 @@ func (m *Manager) event(job *Job, typ string) notify.Event {
 // TestNotify sends a test message to every configured target.
 func (m *Manager) TestNotify(ctx context.Context) error {
 	return m.rt.Load().notifier.Test(ctx)
+}
+
+// verification says, for people, how far the titles of a disc can be
+// trusted: checked title by title against TheDiscDB, or only chosen by
+// length after the disc was identified, or not identified at all.
+func verification(s Job) string {
+	id := s.Identity
+	if id == nil {
+		return ""
+	}
+	if !id.Identified() {
+		label := s.Label
+		if label == "" {
+			label = "none"
+		}
+		return fmt.Sprintf("⚠️ Not identified (label %s); ripping by length", label)
+	}
+	if s.Catalog != "" {
+		catalog := strings.TrimSuffix(strings.TrimPrefix(s.Catalog, "TheDiscDB ("), ")")
+		if s.CatalogMatched > 0 && s.CatalogMatched == s.CatalogCompared {
+			return fmt.Sprintf("✅ Verified by TheDiscDB: all %d titles match %s", s.CatalogMatched, catalog)
+		}
+		return fmt.Sprintf("☑️ TheDiscDB: %d of %d titles match %s", s.CatalogMatched, s.CatalogCompared, catalog)
+	}
+	name := id.Title
+	if id.Year > 0 {
+		name = fmt.Sprintf("%s (%d)", id.Title, id.Year)
+	}
+	how := "titles chosen by length"
+	if s.Selection != nil && len(s.Selection.Picks) > 0 && s.Selection.Picks[0].Episode > 0 {
+		p := s.Selection.Picks[0]
+		how = fmt.Sprintf("episodes numbered in disc order from S%02dE%02d", p.Season, p.Episode)
+	}
+	return fmt.Sprintf("⚠️ Not verified: found %s via %s; %s", name, sourceName(id.Source), how)
+}
+
+func sourceName(src string) string {
+	switch strings.ToLower(src) {
+	case "sonarr":
+		return "Sonarr"
+	case "radarr":
+		return "Radarr"
+	case "tmdb":
+		return "TMDB"
+	case "ocr":
+		return "the title card"
+	case "":
+		return "lookup"
+	}
+	return src
 }

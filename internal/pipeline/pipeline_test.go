@@ -21,6 +21,7 @@ import (
 	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/notify"
+	"github.com/sourcequality/media-ripper/internal/selector"
 	"github.com/sourcequality/media-ripper/internal/store"
 )
 
@@ -861,7 +862,38 @@ func TestJobNotifications(t *testing.T) {
 		t.Fatalf("events = %v", types)
 	}
 	start := events[0]
-	if start.Match != "Identified via sonarr" || len(start.Items) != 2 || start.Items[0] != "S01E01 Pilot" || start.Title != "Friends S01 D1" {
+	if start.Match != "⚠️ Not verified: found Friends (1994) via Sonarr; episodes numbered in disc order from S01E01" || len(start.Items) != 2 || start.Items[0] != "S01E01 Pilot" || start.Title != "Friends S01 D1" {
 		t.Fatalf("started event = %+v", start)
+	}
+}
+
+func TestVerification(t *testing.T) {
+	tz := &metadata.Identity{Kind: metadata.KindTV, Title: "The Twilight Zone", Year: 1959, Season: 1, Source: "sonarr", Confidence: 1}
+	ep := &selector.Selection{Picks: []selector.Pick{{Title: &makemkv.Title{}, Season: 1, Episode: 16}}}
+	cases := []struct {
+		name string
+		job  Job
+		want string
+	}{
+		{"all titles match the catalogue",
+			Job{Identity: tz, Catalog: "TheDiscDB (The Complete Series Blu-ray 2021, Season 1 Disc 4)", CatalogMatched: 8, CatalogCompared: 8},
+			"✅ Verified by TheDiscDB: all 8 titles match The Complete Series Blu-ray 2021, Season 1 Disc 4"},
+		{"most titles match",
+			Job{Identity: tz, Catalog: "TheDiscDB (X, Disc 1)", CatalogMatched: 7, CatalogCompared: 9},
+			"☑️ TheDiscDB: 7 of 9 titles match X, Disc 1"},
+		{"identified, numbered by order",
+			Job{Identity: tz, Selection: ep},
+			"⚠️ Not verified: found The Twilight Zone (1959) via Sonarr; episodes numbered in disc order from S01E16"},
+		{"movie by length",
+			Job{Identity: &metadata.Identity{Kind: metadata.KindMovie, Title: "The Thing", Year: 1982, Source: "radarr", Confidence: 1}},
+			"⚠️ Not verified: found The Thing (1982) via Radarr; titles chosen by length"},
+		{"not identified",
+			Job{Identity: &metadata.Identity{Kind: metadata.KindUnknown}, Label: "BD_ROM"},
+			"⚠️ Not identified (label BD_ROM); ripping by length"},
+	}
+	for _, c := range cases {
+		if got := verification(c.job); got != c.want {
+			t.Errorf("%s:\n got  %q\n want %q", c.name, got, c.want)
+		}
 	}
 }
