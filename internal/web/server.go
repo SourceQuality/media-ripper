@@ -64,6 +64,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reviews/{id}/discard", s.discardReview)
 	mux.HandleFunc("GET /api/lookup", s.lookup)
 	mux.HandleFunc("GET /api/boxsets", s.boxSets)
+	mux.HandleFunc("GET /api/stats", s.stats)
+	mux.HandleFunc("GET /metrics", s.metrics)
 	mux.HandleFunc("GET /api/jobs/{id}/manifest", s.discManifest)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	return logRequests(mux, s.Logger)

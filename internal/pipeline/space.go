@@ -7,9 +7,12 @@ import (
 	"github.com/sourcequality/media-ripper/internal/selector"
 )
 
-// diskSpace reports the bytes an unprivileged user may still write on the
-// filesystem holding path, and the filesystem's device id. Tests replace it.
-var diskSpace = func(path string) (free int64, dev uint64, err error) {
+// spaceFunc reports the bytes an unprivileged user may still write on the
+// filesystem holding path, and the filesystem's device id.
+type spaceFunc func(path string) (free int64, dev uint64, err error)
+
+// diskSpace is the real spaceFunc.
+func diskSpace(path string) (free int64, dev uint64, err error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
 		return 0, 0, err
@@ -29,7 +32,7 @@ const spaceMargin = 1.05
 // It returns an error to stop the job and a warning to log and carry on:
 // titles are delivered while later ones rip, which frees the workspace as
 // it goes, so only room for the largest title is strictly needed there.
-func checkSpace(workDir, library string, sel *selector.Selection, rs *resume) (warning string, err error) {
+func checkSpace(workDir, library string, sel *selector.Selection, rs *resume, diskSpace spaceFunc) (warning string, err error) {
 	var toRip, largest, toDeliver int64
 	for _, p := range sel.Picks {
 		size := int64(float64(p.Title.SizeBytes) * spaceMargin)

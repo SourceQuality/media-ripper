@@ -21,8 +21,6 @@ func TestCheckSpace(t *testing.T) {
 		free int64
 		dev  uint64
 	}
-	orig := diskSpace
-	defer func() { diskSpace = orig }()
 	const gb = int64(1e9)
 	sel := &selector.Selection{Picks: []selector.Pick{
 		{Title: &makemkv.Title{ID: 1, SizeBytes: 5 * gb}},
@@ -44,7 +42,7 @@ func TestCheckSpace(t *testing.T) {
 		{"titles already delivered need nothing", fs{1 * gb, 1}, fs{1 * gb, 2}, "", false, true},
 	}
 	for _, c := range cases {
-		diskSpace = func(path string) (int64, uint64, error) {
+		space := func(path string) (int64, uint64, error) {
 			if path == "/lib" {
 				return c.lib.free, c.lib.dev, nil
 			}
@@ -59,7 +57,7 @@ func TestCheckSpace(t *testing.T) {
 				_ = rs.markDelivered(p.Title.ID, Output{Path: f, Size: 1})
 			}
 		}
-		warn, err := checkSpace(dir, "/lib", sel, rs)
+		warn, err := checkSpace(dir, "/lib", sel, rs, space)
 		switch {
 		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
 			t.Errorf("%s: err = %v, want %q", c.name, err, c.wantErr)

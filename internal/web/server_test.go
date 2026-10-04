@@ -226,3 +226,40 @@ func TestReviewEndpoints(t *testing.T) {
 		t.Fatalf("discard: %d, %d left", resp.StatusCode, len(st.Reviews()))
 	}
 }
+
+func TestMetricsAndStats(t *testing.T) {
+	cfg := config.Default()
+	cfg.Output.Path = t.TempDir()
+	st, _ := store.Open(t.TempDir())
+	_ = st.AppendHistory(map[string]any{"id": "a", "stage": "done", "elapsed": "1h0m0s", "catalog_matched": 8, "catalog_compared": 8,
+		"outputs": []any{map[string]any{"path": "x", "size": 4_000_000_000, "duration": int64(1500e9), "import": "imported"}, map[string]any{"path": "y", "size": 1_000_000_000, "duration": int64(1500e9)}}})
+	_ = st.AppendHistory(map[string]any{"id": "b", "stage": "cancelled"})
+	_ = st.SaveReview("c", map[string]any{"id": "c", "stage": "review"})
+	m := pipeline.New(pipeline.Deps{Config: &cfg, Store: st})
+	srv := httptest.NewServer((&Server{Manager: m, Store: st, Version: "v0.6.0"}).Handler())
+	defer srv.Close()
+
+	resp, _ := http.Get(srv.URL + "/metrics")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	out := string(body)
+	for _, want := range []string{
+		`media_ripper_build_info{version="v0.6.0"} 1`,
+		`media_ripper_discs_total{stage="done"} 1`,
+		`media_ripper_discs_total{stage="cancelled"} 1`,
+		`media_ripper_titles_delivered_total 2`,
+		`media_ripper_titles_imported_total 1`,
+		`media_ripper_delivered_bytes_total 5000000000`,
+		`media_ripper_delivered_video_seconds_total 3000`,
+		`media_ripper_discs_verified_total 1`,
+		`media_ripper_reviews_pending 1`,
+		"# TYPE media_ripper_delivered_bytes_total counter",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("metrics lack %q:\n%s", want, out)
+		}
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/plain; version=0.0.4") {
+		t.Errorf("content type %q", ct)
+	}
+}

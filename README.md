@@ -248,6 +248,14 @@ State lives in `workspace/state/`: `history.jsonl`, `discs.json` (ripped
 fingerprints) and `series.json` (next episode per season). All plain JSON;
 delete an entry to make the daemon forget it.
 
+## Metrics
+
+`GET /metrics` serves Prometheus text: discs by result, titles delivered
+and imported, bytes and hours delivered, verified discs, reviews waiting,
+drive activity and speeds, and the library storage's state, probe time and
+free space. `GET /api/stats` has the same totals as JSON; the History page
+shows them.
+
 ## TV episode numbering
 
 When the disc is in [TheDiscDB](https://thediscdb.com), its catalogue says
