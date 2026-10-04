@@ -123,6 +123,11 @@
       { key: 'notify.discord.webhook_url', label: 'Or: channel webhook URL', type: 'secret', wide: true, hint: 'Channel settings → Integrations → Webhooks. Used when no bot token and channel are set' },
       { key: 'discord.test', label: 'Check it', type: 'action', action: 'test-notify', text: 'Send test message', hint: 'Uses the saved settings: save first' },
     ]},
+    { title: 'Updates', fields: [
+      { key: 'updates.check', label: 'Tell me about new releases', type: 'bool' },
+      { key: 'updates.repo', label: 'Repository', type: 'text', hint: 'GitHub owner/name' },
+      { key: 'updates.token', label: 'GitHub token', type: 'secret', hint: 'Read access; needed while the repository is private' },
+    ]},
     { title: 'Logging', fields: [
       { key: 'log.level', label: 'Level', type: 'select', options: ['debug', 'info', 'warn', 'error'] },
       { key: 'log.format', label: 'Format', type: 'select', options: ['text', 'json'] },
