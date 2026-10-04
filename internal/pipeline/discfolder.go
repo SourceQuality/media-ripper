@@ -189,6 +189,7 @@ type DiscFolder struct {
 	Kept    bool   `json:"kept"`              // the small files are kept
 	Log     bool   `json:"log"`               // the MakeMKV scan log is kept
 	Waiting bool   `json:"waiting,omitempty"` // read when the disc goes in
+	Reading bool   `json:"reading,omitempty"` // the disc is being read now
 	Files   int    `json:"files,omitempty"`
 	Bytes   int64  `json:"bytes,omitempty"` // the disc's full size
 	NAS     string `json:"nas,omitempty"`   // the copy on the library share
@@ -222,6 +223,7 @@ func (m *Manager) DiscFolderStatus(id string) (DiscFolder, error) {
 	for _, r := range m.folderWanted {
 		st.Waiting = st.Waiting || r.jobID == id
 	}
+	st.Reading = m.folderReading[id]
 	m.mu.Unlock()
 	return st, nil
 }
@@ -233,6 +235,9 @@ func (m *Manager) RequestDiscFolder(id string) error {
 	if !ok || j.Fingerprint == "" {
 		return errors.New("this disc was not recorded with a fingerprint")
 	}
+	if st, err := m.DiscFolderStatus(id); err == nil && (st.Reading || st.Kept && st.Log) {
+		return nil // already being read, or nothing left to read
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.folderWanted == nil {
@@ -240,6 +245,31 @@ func (m *Manager) RequestDiscFolder(id string) error {
 	}
 	m.folderWanted[j.Fingerprint] = folderRequest{jobID: id, at: time.Now()}
 	return nil
+}
+
+// CancelDiscFolder drops a request that is still waiting for its disc.
+func (m *Manager) CancelDiscFolder(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for fp, r := range m.folderWanted {
+		if r.jobID == id {
+			delete(m.folderWanted, fp)
+		}
+	}
+}
+
+// setFolderReading marks a job's disc as being read, for the UI.
+func (m *Manager) setFolderReading(id string, on bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.folderReading == nil {
+		m.folderReading = map[string]bool{}
+	}
+	if on {
+		m.folderReading[id] = true
+	} else {
+		delete(m.folderReading, id)
+	}
 }
 
 // takeFolderRequest returns the job waiting for this disc, if any.
@@ -260,6 +290,9 @@ func (m *Manager) takeFolderRequest(fp string) (string, bool) {
 // readRequestedFolder serves a request for an inserted disc, then ejects.
 func (r *runner) readRequestedFolder(ctx context.Context, d drive.Drive, id string) {
 	r.log.Info("reading the disc's folder for TheDiscDB", "job", id)
+	r.m.setFolderReading(id, true)
+	defer r.m.setFolderReading(id, false)
+	defer r.m.CancelDiscFolder(id) // a second click while reading is moot
 	n, err := r.m.readFolder(ctx, id, r.path)
 	if err == nil {
 		r.log.Info("kept the disc's folder for TheDiscDB", "job", id, "files", n)

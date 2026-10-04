@@ -162,16 +162,48 @@ func TestDiscFolderReadOnReinsert(t *testing.T) {
 	if st, _ := e.m.DiscFolderStatus(j.ID); st.Kept || st.Log {
 		t.Fatal("folder or log kept with disc_folder off")
 	}
+	// A waiting request can be cancelled.
+	if err := e.m.RequestDiscFolder(j.ID); err != nil {
+		t.Fatal(err)
+	}
+	e.m.CancelDiscFolder(j.ID)
+	if st, _ := e.m.DiscFolderStatus(j.ID); st.Waiting {
+		t.Fatalf("cancelled request still waiting: %+v", st)
+	}
 	if err := e.m.RequestDiscFolder(j.ID); err != nil {
 		t.Fatal(err)
 	}
 	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Waiting {
 		t.Fatalf("status = %+v", st)
 	}
+	// Hold the read so its progress can be seen.
+	read, release := e.m.deps.ReadDisc, make(chan struct{})
+	e.m.deps.ReadDisc = func(dev string, want func(udf.File) bool, limit int64) ([]udf.File, map[string][]byte, error) {
+		<-release
+		return read(dev, want, limit)
+	}
 	e.drv.insert("fp-matrix", "THE_MATRIX")
+	deadline := time.Now().Add(5 * time.Second)
+	for st, _ := e.m.DiscFolderStatus(j.ID); !st.Reading; st, _ = e.m.DiscFolderStatus(j.ID) {
+		if time.Now().After(deadline) {
+			t.Fatalf("never shown as reading: %+v", st)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// Clicking again while it reads does not queue another read.
+	_ = e.m.RequestDiscFolder(j.ID)
+	if st, _ := e.m.DiscFolderStatus(j.ID); st.Waiting || !st.Reading {
+		t.Fatalf("second click while reading: %+v", st)
+	}
+	close(release)
 	e.waitEject(t, 2)
-	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Kept || !st.Log || st.Waiting {
+	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Kept || !st.Log || st.Waiting || st.Reading {
 		t.Fatalf("after reinsert: %+v", st)
+	}
+	// Nothing left to read: a request is a no-op.
+	_ = e.m.RequestDiscFolder(j.ID)
+	if st, _ := e.m.DiscFolderStatus(j.ID); st.Waiting {
+		t.Fatalf("request with everything kept: %+v", st)
 	}
 	if n := len(e.m.Snapshot().Recent); n != 1 {
 		t.Fatalf("%d jobs: the disc was ripped again", n)

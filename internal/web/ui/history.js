@@ -87,8 +87,10 @@
           <a class="btn" href="/api/jobs/${encodeURIComponent(id)}/makemkv-log?download=1" download>Download log</a></div>
         <p class="small" id="log-status"></p>`);
     }
-    if (!f.kept || !f.log) {
-      parts.push(f.waiting ? '<p><strong>Put the disc in the drive now.</strong> It is read (under a minute, no rip) and ejected.</p>'
+    if (f.reading) {
+      parts.push('<p><strong>Reading the disc…</strong> Its small files take seconds; MakeMKV\'s scan of every title takes a minute or two. It is ejected when done.</p>');
+    } else if (!f.kept || !f.log) {
+      parts.push(f.waiting ? '<div class="row actions-row"><p><strong>Put the disc in the drive now.</strong> It is read (a minute or two, no rip) and ejected.</p><button data-folder="cancel">Cancel</button></div>'
         : `<div class="row actions-row"><button data-folder="read">Read from disc</button></div>
           <p class="muted small">${f.kept ? "The MakeMKV log" : "The disc's small files and MakeMKV log"} were not kept for this disc. Click, then put the disc in: it is read and ejected, not ripped again.</p>`);
     }
@@ -139,10 +141,10 @@
       });
       view.querySelectorAll('button[data-folder]').forEach(b => b.onclick = () => {
         const what = b.dataset.folder;
-        const url = `/api/jobs/${encodeURIComponent(id)}/disc-folder/${what === 'read' ? 'read' : 'nas'}`;
+        const url = `/api/jobs/${encodeURIComponent(id)}/disc-folder/${what === 'read' || what === 'cancel' ? 'read' : 'nas'}`;
         b.disabled = true;
         if (what === 'nas') b.textContent = 'Writing… (can take a few minutes on a busy share)';
-        fetch(url, { method: what === 'remove' ? 'DELETE' : 'POST' }).then(r => r.json()).then(res => {
+        fetch(url, { method: what === 'remove' || what === 'cancel' ? 'DELETE' : 'POST' }).then(r => r.json()).then(res => {
           if (res.error) alert(res.error);
         }).finally(() => renderDetail(id));
       });
@@ -160,7 +162,7 @@
           .finally(() => { send.disabled = false; });
       };
       // A disc still being ripped, or awaited for its folder: keep it current.
-      if (!terminal(j.stage) || (folder && folder.waiting)) refresh = setTimeout(() => { if (decodeURIComponent(location.hash.slice(1)) === id) renderDetail(id); }, 5000);
+      if (!terminal(j.stage) || (folder && (folder.waiting || folder.reading))) refresh = setTimeout(() => { if (decodeURIComponent(location.hash.slice(1)) === id) renderDetail(id); }, 5000);
     });
   };
 
