@@ -33,7 +33,11 @@ type Event struct {
 	// Match says how the disc was identified, e.g. "TheDiscDB: …".
 	Match string `json:"match,omitempty"`
 	// Items are the titles being ripped, e.g. "S01E08 Time Enough at Last".
-	Items    []string  `json:"items,omitempty"`
+	Items []string `json:"items,omitempty"`
+	// Summary is the overall state for progress updates ("Ripping 3 of 8").
+	Summary string `json:"summary,omitempty"`
+	// Final marks the last progress update of a job: buttons go away.
+	Final    bool      `json:"final,omitempty"`
 	Warnings []string  `json:"warnings,omitempty"`
 	Label    string    `json:"label,omitempty"`
 	Title    string    `json:"title,omitempty"`
@@ -79,6 +83,14 @@ func (n *Notifier) send(ctx context.Context, ev Event) error {
 		if n.Logger != nil {
 			n.Logger.Warn("notify failed", "target", target, "err", err)
 		}
+	}
+	if ev.Type == "progress" {
+		// Progress only updates Discord's live message in place; for the
+		// webhook and ntfy it would be a flood.
+		if n.Discord.enabled() {
+			report("discord", n.Discord.send(ctx, client, ev))
+		}
+		return errors.Join(errs...)
 	}
 	if n.WebhookURL != "" {
 		body, _ := json.Marshal(ev)

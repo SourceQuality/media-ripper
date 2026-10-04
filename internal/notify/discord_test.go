@@ -160,3 +160,58 @@ func TestButtonsOnBotMessages(t *testing.T) {
 		t.Fatal("webhook message with buttons")
 	}
 }
+
+// The "Ripping" message is edited in place with progress, and the last
+// edit removes the buttons; the bot and the webhook both work.
+func TestLiveProgressMessage(t *testing.T) {
+	for _, mode := range []string{"bot", "webhook"} {
+		var mu sync.Mutex
+		var reqs []string
+		var bodies []map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			data, _ := io.ReadAll(r.Body)
+			var m map[string]any
+			_ = json.Unmarshal(data, &m)
+			mu.Lock()
+			reqs = append(reqs, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
+			bodies = append(bodies, m)
+			mu.Unlock()
+			_, _ = w.Write([]byte(`{"id":"msg42"}`))
+		}))
+		d := &Discord{Buttons: true, apiBase: srv.URL}
+		if mode == "bot" {
+			d.BotToken, d.ChannelID = "tok", "chan"
+		} else {
+			d.WebhookURL = srv.URL + "/api/webhooks/1/abc"
+		}
+		n := &Notifier{Discord: d}
+		ctx := context.Background()
+		n.Send(ctx, Event{Type: "progress", JobID: "j1", Items: []string{"x"}}) // nothing to edit yet
+		n.Send(ctx, Event{Type: "started", JobID: "j1", Title: "The Twilight Zone S01 D3"})
+		n.Send(ctx, Event{Type: "progress", JobID: "j1", Title: "The Twilight Zone S01 D3", Summary: "Ripping 2 of 7 · 1 delivered",
+			Items: []string{"✅ S01E16 The Hitch-Hiker · delivered", "▶️ S01E17 The Fever · ripping 40% · 20.1 MB/s · 3m0s left"}})
+		n.Send(ctx, Event{Type: "progress", JobID: "j1", Final: true, Summary: "Done"})
+		n.Send(ctx, Event{Type: "progress", JobID: "j1", Summary: "after the end"}) // forgotten: no edit
+		srv.Close()
+
+		wantEdit := "PATCH /channels/chan/messages/msg42?"
+		wantPost := "POST /channels/chan/messages?"
+		if mode == "webhook" {
+			wantEdit, wantPost = "PATCH /api/webhooks/1/abc/messages/msg42?", "POST /api/webhooks/1/abc?wait=true"
+		}
+		if len(reqs) != 3 || reqs[0] != wantPost || reqs[1] != wantEdit || reqs[2] != wantEdit {
+			t.Fatalf("%s: requests = %v", mode, reqs)
+		}
+		embed := bodies[1]["embeds"].([]any)[0].(map[string]any)
+		desc, _ := embed["description"].(string)
+		field := embed["fields"].([]any)[0].(map[string]any)
+		if !strings.Contains(desc, "Ripping 2 of 7") || !strings.Contains(field["value"].(string), "ripping 40%") {
+			t.Fatalf("%s: progress embed = %v", mode, embed)
+		}
+		if mode == "bot" {
+			if c, _ := bodies[2]["components"].([]any); c == nil || len(c) != 0 {
+				t.Fatalf("final edit keeps buttons: %v", bodies[2]["components"])
+			}
+		}
+	}
+}

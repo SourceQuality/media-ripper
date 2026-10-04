@@ -628,6 +628,9 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 		job.logf("%s", warning)
 	}
 	job.rt.notifier.Send(ctx, m.event(job, "started"))
+	stopProgress := make(chan struct{})
+	go m.liveProgress(ctx, job, stopProgress)
+	defer close(stopProgress)
 
 	// Rip everything before anything else needs the disc so it can leave the
 	// drive as early as possible. When the disc is already identified, each
@@ -819,6 +822,8 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	snap := job.Snapshot()
 	log := m.log.With("drive", job.Drive, "job", job.ID)
 	workDir := workDir(cfg, job)
+
+	m.finalProgress(ctx, job)
 
 	switch snap.Stage {
 	case StageDone, StageReview:

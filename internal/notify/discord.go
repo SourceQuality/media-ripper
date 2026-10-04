@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -40,6 +41,9 @@ type Discord struct {
 	// messages; a running discordbot.Bot handles the presses.
 	Buttons bool
 
+	mu       sync.Mutex
+	messages map[string]string // job id -> its live "Ripping" message
+
 	apiBase string // overridden in tests
 }
 
@@ -49,43 +53,103 @@ func (d *Discord) enabled() bool {
 
 func (d *Discord) send(ctx context.Context, client *http.Client, ev Event) error {
 	payload := map[string]any{"embeds": []any{discordEmbed(ev)}, "allowed_mentions": map[string]any{"parse": []string{}}}
-	var req *http.Request
-	var err error
-	if d.BotToken != "" && d.ChannelID != "" {
-		if d.Buttons {
-			if c := components(ev); c != nil {
-				payload["components"] = c
-			}
+	bot := d.BotToken != "" && d.ChannelID != ""
+	if bot && d.Buttons && !ev.Final {
+		if c := components(ev); c != nil {
+			payload["components"] = c
 		}
+	}
+	// A disc's "Ripping" message is kept up to date in place.
+	if ev.Type == "progress" {
+		id := d.live(ev.JobID, "", ev.Final)
+		if id == "" {
+			return nil
+		}
+		if ev.Final {
+			payload["components"] = []any{}
+		}
+		_, err := d.request(ctx, client, http.MethodPatch, id, payload)
+		return err
+	}
+	id, err := d.request(ctx, client, http.MethodPost, "", payload)
+	if err == nil && ev.Type == "started" && ev.JobID != "" && id != "" {
+		d.live(ev.JobID, id, false)
+	}
+	return err
+}
+
+// live remembers (id set) or looks up a job's live message; final forgets
+// it after this last edit.
+func (d *Discord) live(jobID, id string, final bool) string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.messages == nil {
+		d.messages = map[string]string{}
+	}
+	if id != "" {
+		d.messages[jobID] = id
+		return id
+	}
+	got := d.messages[jobID]
+	if final {
+		delete(d.messages, jobID)
+	}
+	return got
+}
+
+// request posts a new message (messageID empty) or edits one, as the bot
+// or through the webhook, and returns the message id.
+func (d *Discord) request(ctx context.Context, client *http.Client, method, messageID string, payload map[string]any) (string, error) {
+	var target string
+	bot := d.BotToken != "" && d.ChannelID != ""
+	if bot {
 		base := d.apiBase
 		if base == "" {
 			base = "https://discord.com/api/v10"
 		}
-		body, _ := json.Marshal(payload)
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, base+"/channels/"+url.PathEscape(d.ChannelID)+"/messages", bytes.NewReader(body))
-		if err == nil {
-			req.Header.Set("Authorization", "Bot "+d.BotToken)
+		target = base + "/channels/" + url.PathEscape(d.ChannelID) + "/messages"
+		if messageID != "" {
+			target += "/" + url.PathEscape(messageID)
 		}
 	} else {
-		payload["username"] = "media-ripper"
-		body, _ := json.Marshal(payload)
-		req, err = http.NewRequestWithContext(ctx, http.MethodPost, d.WebhookURL, bytes.NewReader(body))
+		u, err := url.Parse(d.WebhookURL)
+		if err != nil {
+			return "", err
+		}
+		if messageID != "" {
+			u.Path = strings.TrimSuffix(u.Path, "/") + "/messages/" + url.PathEscape(messageID)
+		} else {
+			payload["username"] = "media-ripper"
+			q := u.Query()
+			q.Set("wait", "true") // so Discord returns the message and its id
+			u.RawQuery = q.Encode()
+		}
+		target = u.String()
 	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return "", err
+	}
+	if bot {
+		req.Header.Set("Authorization", "Bot "+d.BotToken)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "media-ripper (https://github.com/sourcequality/media-ripper)")
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return fmt.Errorf("discord: %s: %s", resp.Status, strings.TrimSpace(string(msg)))
+		return "", fmt.Errorf("discord: %s: %s", resp.Status, strings.TrimSpace(string(data)))
 	}
-	return nil
+	var msg struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(data, &msg)
+	return msg.ID, nil
 }
 
 // Embed colours.
@@ -117,6 +181,17 @@ func discordEmbed(ev Event) map[string]any {
 	case "started":
 		e["title"], e["color"] = "Ripping: "+name, colorBlue
 		e["description"] = ev.Match
+		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
+	case "progress":
+		e["title"], e["color"] = "Ripping: "+name, colorBlue
+		if ev.Final {
+			e["title"], e["color"] = name, colorGrey
+		}
+		desc := ev.Match
+		if ev.Summary != "" {
+			desc = strings.TrimSpace(desc + "\n**" + ev.Summary + "**")
+		}
+		e["description"] = desc
 		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 	case "ready":
 		e["title"], e["color"] = "Ready for the next disc", colorGreen
