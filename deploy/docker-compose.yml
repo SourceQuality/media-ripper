@@ -4,7 +4,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
       args:
-        MAKEMKV_VERSION: "1.17.9"
+        MAKEMKV_VERSION: "2.0.0"
+        # Required: accepts MakeMKV's licence (read it first).
+        MAKEMKV_ACCEPT_EULA: "${MAKEMKV_ACCEPT_EULA:-}"
     image: media-ripper:latest
     container_name: media-ripper
     restart: unless-stopped

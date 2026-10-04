@@ -19,6 +19,7 @@ import (
 
 	"github.com/sourcequality/media-ripper/internal/config"
 	"github.com/sourcequality/media-ripper/internal/drive"
+	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
 	"github.com/sourcequality/media-ripper/internal/pipeline"
 	"github.com/sourcequality/media-ripper/internal/store"
@@ -179,6 +180,21 @@ func checkTools(cfg *config.Config, log *slog.Logger) error {
 	var errs []error
 	if _, err := exec.LookPath(cfg.MakeMKV.Binary); err != nil {
 		errs = append(errs, fmt.Errorf("%s not found", cfg.MakeMKV.Binary))
+	} else {
+		// Check the key the daemon would use, not whatever is on disk now.
+		if cfg.MakeMKV.WriteSettings {
+			if err := makemkv.WriteSettings(cfg.MakeMKV.SettingsDir, cfg.MakeMKV.Key, makemkv.SelectionString(cfg.Selection.Languages)); err != nil {
+				log.Warn("write makemkv settings", "err", err)
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		version, err := (&makemkv.Client{Binary: cfg.MakeMKV.Binary}).Probe(ctx)
+		cancel()
+		if err != nil {
+			errs = append(errs, err)
+		} else {
+			fmt.Printf("makemkv: v%s\n", version)
+		}
 	}
 	if cfg.PostProcess.Mode == "remux" {
 		_, e1 := exec.LookPath("mkvmerge")
