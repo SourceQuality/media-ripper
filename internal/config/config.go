@@ -129,6 +129,15 @@ type Metadata struct {
 	Timeout        Duration          `yaml:"timeout" json:"timeout"`
 	LabelOverrides map[string]string `yaml:"label_overrides" json:"label_overrides"`
 	OCR            OCR               `yaml:"ocr" json:"ocr"`
+	TheDiscDB      TheDiscDB         `yaml:"thediscdb" json:"thediscdb"`
+}
+
+// TheDiscDB configures disc lookups in the TheDiscDB catalogue, which maps
+// each title of a catalogued disc to its episode, main movie or extra.
+type TheDiscDB struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// Repo is the GitHub repository holding the catalogue data.
+	Repo string `yaml:"repo" json:"repo"`
 }
 
 // OCR identifies discs with useless labels by reading the title card and
@@ -243,9 +252,10 @@ func Default() Config {
 			WriteSettings: true,
 		},
 		Metadata: Metadata{
-			Provider: "auto",
-			Language: "en-US",
-			Timeout:  Duration(20 * time.Second),
+			TheDiscDB: TheDiscDB{Enabled: true, Repo: "TheDiscDb/data"},
+			Provider:  "auto",
+			Language:  "en-US",
+			Timeout:   Duration(20 * time.Second),
 			OCR: OCR{
 				Tesseract:     "tesseract",
 				Languages:     "eng",
