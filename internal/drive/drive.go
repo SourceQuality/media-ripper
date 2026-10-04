@@ -80,6 +80,26 @@ func Open(path string) (Drive, error) {
 	return &linuxDrive{path: path}, nil
 }
 
+// Model names the drive as the kernel reports it, e.g. "HL-DT-ST BD-RE
+// BU40N", or "" when sysfs has nothing for path.
+func Model(path string) string { return modelFrom("/sys/class/block", path) }
+
+func modelFrom(sysBlock, path string) string {
+	real, err := filepath.EvalSymlinks(path) // /dev/cdrom -> /dev/sr0
+	if err != nil {
+		real = path
+	}
+	dir := filepath.Join(sysBlock, filepath.Base(real), "device")
+	read := func(name string) string {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return ""
+		}
+		return strings.Join(strings.Fields(string(b)), " ")
+	}
+	return strings.TrimSpace(read("vendor") + " " + read("model"))
+}
+
 // Discover lists /dev/sr* nodes in order.
 func Discover() []string {
 	matches, _ := filepath.Glob("/dev/sr[0-9]*")

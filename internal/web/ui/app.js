@@ -64,16 +64,21 @@
         ${d.status === 'disc-ok' ? `<button onclick="act.rescan('${esc(d.path)}')">Rip</button><button onclick="act.eject('${esc(d.path)}')">Eject</button>` : ''}</div>
         ${d.last_error ? `<div class="stage failed">${esc(d.last_error)}</div>` : ''}`;
     }
-    return `<div class="card"><div class="drive">${esc(d.path)}</div>${body}</div>`;
+    const head = d.model ? `<span class="model">${esc(d.model)}</span> <span class="drive">${esc(d.path)}</span>` : `<span class="drive">${esc(d.path)}</span>`;
+    return `<div class="card"><div class="drive-head">${head}</div>${body}</div>`;
   };
 
   const fmtWhen = t => { const d = new Date(t); const today = new Date(); return d.toDateString() === today.toDateString() ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
 
+  let models = {};
+  const driveName = p => models[p] || p;
+
   const render = s => {
     $('#version').textContent = s.version || '';
+    models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
     $('#drives').innerHTML = s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>';
     const rows = (s.recent || []).filter(j => terminal(j.stage)).map(j => `<tr>
-      <td>${esc(fmtWhen(j.finished_at || j.started_at))}</td><td class="drive">${esc(j.drive)}</td>
+      <td>${esc(fmtWhen(j.finished_at || j.started_at))}</td><td class="drive" title="${esc(j.drive)}">${esc(driveName(j.drive))}</td>
       <td>${esc(jobTitle(j))}${j.outputs && j.outputs.length ? `<ul class="outputs">${j.outputs.map(o => `<li>${esc(o.path)}</li>`).join('')}</ul>` : ''}${j.error ? `<div class="stage failed">${esc(j.error)}</div>` : ''}</td>
       <td class="stage ${esc(j.stage)}">${esc(j.stage)}</td><td>${esc(j.elapsed || '')}</td>
       <td class="actions"><button onclick="act.detail('${esc(j.id)}')">Log</button></td></tr>`);

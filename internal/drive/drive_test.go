@@ -3,6 +3,8 @@ package drive
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -122,5 +124,22 @@ func TestConfirmEjected(t *testing.T) {
 		if (err != nil) != c.wantErr {
 			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
 		}
+	}
+}
+
+func TestModelFromSysfs(t *testing.T) {
+	sys := t.TempDir()
+	dev := filepath.Join(sys, "sr0", "device")
+	if err := os.MkdirAll(dev, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// sysfs pads these with spaces and a newline.
+	_ = os.WriteFile(filepath.Join(dev, "vendor"), []byte("HL-DT-ST\n"), 0o644)
+	_ = os.WriteFile(filepath.Join(dev, "model"), []byte("BD-RE BU40N     \n"), 0o644)
+	if got := modelFrom(sys, "/dev/sr0"); got != "HL-DT-ST BD-RE BU40N" {
+		t.Fatalf("model = %q", got)
+	}
+	if got := modelFrom(sys, "/dev/sr9"); got != "" {
+		t.Fatalf("unknown drive model = %q", got)
 	}
 }
