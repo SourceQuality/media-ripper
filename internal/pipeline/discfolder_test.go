@@ -22,6 +22,7 @@ var discDate = time.Date(2016, 10, 3, 9, 30, 0, 0, time.UTC)
 func fakeDisc(e *env) (reads *int) {
 	reads = new(int)
 	files := []udf.File{
+		{Path: "dummy_f.dat", Size: 1, Modified: time.Date(1754, 3, 1, 0, 0, 0, 0, time.UTC)}, // as on The Thing
 		{Path: "AACS/Unit_Key_RO.inf", Size: 5, Modified: discDate},
 		{Path: "BDMV/index.bdmv", Size: 4, Modified: discDate},
 		{Path: "BDMV/PLAYLIST/00800.mpls", Size: 3, Modified: discDate},
@@ -60,7 +61,7 @@ func TestDiscFolderKeptAndExported(t *testing.T) {
 		t.Fatalf("disc read %d times for its folder", *reads)
 	}
 	st, err := e.m.DiscFolderStatus(j.ID)
-	if err != nil || !st.Kept || st.Files != 4 || st.Name != "THE_MATRIX" {
+	if err != nil || !st.Kept || st.Files != 5 || st.Name != "THE_MATRIX" {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
 
@@ -71,6 +72,9 @@ func TestDiscFolderKeptAndExported(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(root, "AACS", "Unit_Key_RO.inf")); string(b) != "aacsk" {
 		t.Fatalf("AACS key file = %q", b)
+	}
+	if dummy, _ := os.Stat(filepath.Join(root, "dummy_f.dat")); dummy == nil || !dummy.ModTime().Equal(discDate) {
+		t.Fatalf("a 1754 date must become the disc's latest: %v", dummy)
 	}
 	m2ts, err := os.Stat(filepath.Join(root, "BDMV", "STREAM", "00001.m2ts"))
 	if err != nil || m2ts.Size() != 3<<20 || !m2ts.ModTime().Equal(discDate) {
@@ -125,7 +129,7 @@ func TestDiscFolderKeptAndExported(t *testing.T) {
 		}
 		got[f.Name] = string(data)
 	}
-	if got["THE_MATRIX/AACS/Unit_Key_RO.inf"] != "aacsk" || got["THE_MATRIX/BDMV/PLAYLIST/00800.mpls"] != "MPL" || len(got) != 4 {
+	if got["THE_MATRIX/AACS/Unit_Key_RO.inf"] != "aacsk" || got["THE_MATRIX/BDMV/PLAYLIST/00800.mpls"] != "MPL" || len(got) != 5 {
 		t.Fatalf("zip entries = %v", got)
 	}
 }
