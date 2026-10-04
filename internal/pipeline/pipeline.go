@@ -17,6 +17,7 @@ import (
 
 	"github.com/sourcequality/media-ripper/internal/arr"
 	"github.com/sourcequality/media-ripper/internal/config"
+	"github.com/sourcequality/media-ripper/internal/discdb"
 	"github.com/sourcequality/media-ripper/internal/drive"
 	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
@@ -41,6 +42,8 @@ type Deps struct {
 	OpenDrive func(path string) (drive.Drive, error)
 	// OCRTools overrides the ffmpeg and tesseract binaries (tests).
 	OCRTools []string
+	// Catalog replaces TheDiscDB (tests).
+	Catalog Catalog
 }
 
 // runtime is one immutable configuration generation with the components
@@ -52,7 +55,13 @@ type runtime struct {
 	notifier *notify.Notifier
 	radarr   *arr.Client
 	sonarr   *arr.Client
+	catalog  Catalog  // nil when TheDiscDB is off
 	ocrTools []string // test hook: [ffmpeg, tesseract]
+}
+
+// Catalog finds the catalogued disc that matches a scan (TheDiscDB).
+type Catalog interface {
+	Find(ctx context.Context, kind discdb.Kind, title string, year int, scan []discdb.ScanTitle) (*discdb.Match, error)
 }
 
 // Manager owns one runner per drive.
@@ -150,6 +159,14 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 	rt.sonarr = arr.New(arr.Sonarr, cfg.Arr.Sonarr, cfg.Metadata.Timeout.D()*3, m.log)
 	if rt.provider == nil {
 		rt.provider = m.provider(cfg, rt)
+	}
+	switch {
+	case m.deps.Catalog != nil:
+		rt.catalog = m.deps.Catalog
+	case cfg.Metadata.TheDiscDB.Enabled:
+		c := discdb.New(cfg.Metadata.TheDiscDB.Repo, filepath.Join(cfg.StateDir(), "thediscdb"))
+		c.Logger = m.log
+		rt.catalog = c
 	}
 	if rt.notifier == nil {
 		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log}
@@ -917,7 +934,13 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 	if id.Kind == metadata.KindTV {
 		opts.NextEpisode = m.deps.Store.NextEpisode(seriesKey(id), id.Season)
 	}
-	sel, err := selector.Select(disc, id, opts)
+	var sel *selector.Selection
+	if entries, source := m.catalogEntries(ctx, job, disc, id); entries != nil {
+		sel, err = selector.SelectFromCatalog(disc, id, entries, source)
+		adoptCatalogSeason(job, id, sel)
+	} else {
+		sel, err = selector.Select(disc, id, opts)
+	}
 	if sel != nil {
 		job.set(func(j *Job) { j.Selection = sel })
 		for _, p := range sel.Picks {

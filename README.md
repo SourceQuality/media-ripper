@@ -180,12 +180,22 @@ delete an entry to make the daemon forget it.
 
 ## TV episode numbering
 
-TMDB knows the episodes of a season but not which ones are on which disc.
-media-ripper numbers the episode-length titles on a disc in playback order
-starting from the season's stored "next episode", then advances it. Insert
-disc 1, 2, 3 of a season in order and the numbering is right. If you go out
-of order, reset the season in the UI or API, or set the label override for
-that disc. Titles about twice the episode length become `S01E03-E04`.
+When the disc is in [TheDiscDB](https://thediscdb.com), its catalogue says
+which episode each title is, so episodes get their real numbers and names,
+extras are skipped by name, and discs can go in **in any order**. The
+catalogue is read from its GitHub repository (`TheDiscDb/data`): one
+listing a day, then only the disc files of the identified title, cached
+under the workspace. A disc matches when its titles' playlists and exact
+sizes agree with a catalogued disc; nothing else is read from the disc.
+Turn it off with `metadata.thediscdb.enabled: false`.
+
+TMDB and Sonarr know the episodes of a season but not which ones are on
+which disc, so for discs TheDiscDB does not have, media-ripper numbers the
+episode-length titles in playback order starting from the season's stored
+"next episode", then advances it. Insert disc 1, 2, 3 of such a season in
+order and the numbering is right. If you go out of order, reset the season
+in the UI or API, or set the label override for that disc. Titles about
+twice the episode length become `S01E03-E04`.
 
 ## Limits
 

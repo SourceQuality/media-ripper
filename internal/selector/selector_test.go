@@ -217,3 +217,44 @@ func TestTVKeepsNormalBitrateSpread(t *testing.T) {
 		t.Fatalf("picks = %d: %+v", len(sel.Picks), sel.Skipped)
 	}
 }
+
+// With a catalogue match the disc's own numbering wins: disc 2 inserted
+// first is still S01E08.., and the extra is skipped by name.
+func TestSelectFromCatalog(t *testing.T) {
+	ep := 26 * time.Minute
+	disc := &makemkv.Disc{Titles: []*makemkv.Title{
+		title(0, ep, 5, []int{1}, "00000.mpls"),
+		title(1, 35*time.Minute, 4, []int{2}, "00011.mpls"),
+		title(2, ep, 5, []int{3}, "00001.mpls"),
+		title(3, 2*time.Minute, 1, []int{4}, "00013.mpls"),
+	}}
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "The Twilight Zone", Season: 1}
+	entries := map[int]CatalogEntry{
+		0: {Type: "Episode", Title: "Judgment Night", Season: 1, Episode: 10},
+		1: {Type: "Extra", Title: "Rod Serling interview"},
+		2: {Type: "Episode", Title: "Perchance to Dream", Season: 1, Episode: 9},
+	}
+	sel, err := SelectFromCatalog(disc, id, entries, "TheDiscDB")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sel.Picks) != 2 || sel.Picks[0].Episode != 9 || sel.Picks[0].Title.ID != 2 || sel.Picks[1].EpisodeTitle != "Judgment Night" {
+		t.Fatalf("picks = %+v", sel.Picks)
+	}
+	if sel.NextEpisode != 11 {
+		t.Fatalf("next = %d", sel.NextEpisode)
+	}
+	reasons := map[int]string{}
+	for _, s := range sel.Skipped {
+		reasons[s.TitleID] = s.Reason
+	}
+	if reasons[1] != `TheDiscDB: extra "Rod Serling interview"` || reasons[3] != "TheDiscDB: not catalogued" {
+		t.Fatalf("skipped = %v", reasons)
+	}
+
+	movie := &makemkv.Disc{Titles: []*makemkv.Title{title(0, 100*time.Minute, 20, []int{1}, "00800.mpls"), title(1, 5*time.Minute, 1, []int{2}, "00010.mpls")}}
+	sel, err = SelectFromCatalog(movie, &metadata.Identity{Kind: metadata.KindMovie, Title: "x"}, map[int]CatalogEntry{0: {Type: "MainMovie"}, 1: {Type: "Trailer"}}, "TheDiscDB")
+	if err != nil || len(sel.Picks) != 1 || sel.Picks[0].Title.ID != 0 {
+		t.Fatalf("movie: %v %+v", err, sel)
+	}
+}

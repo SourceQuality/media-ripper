@@ -510,3 +510,78 @@ func fmtDur(d time.Duration) string {
 	}
 	return fmt.Sprintf("%d:%02d", m, s)
 }
+
+// CatalogEntry is what a disc catalogue (TheDiscDB) says a title holds.
+type CatalogEntry struct {
+	Type    string // "MainMovie", "Episode", "Extra", ... ; "" when untagged
+	Title   string
+	Season  int
+	Episode int
+}
+
+// SelectFromCatalog picks titles from a catalogue entry for every title of
+// the disc it matched, instead of guessing from lengths: the main movie, or
+// the episodes with their own season, number and name. Titles the catalogue
+// calls anything else are skipped with that reason. source names the
+// catalogue in reasons ("TheDiscDB").
+func SelectFromCatalog(disc *makemkv.Disc, id *metadata.Identity, entries map[int]CatalogEntry, source string) (*Selection, error) {
+	if disc == nil || len(disc.Titles) == 0 {
+		return nil, errors.New("disc has no titles")
+	}
+	sel := &Selection{Kind: id.Kind}
+	describe := func(e CatalogEntry) string {
+		switch {
+		case e.Type == "":
+			return source + ": not catalogued"
+		case e.Title != "":
+			return fmt.Sprintf("%s: %s %q", source, strings.ToLower(e.Type), e.Title)
+		}
+		return source + ": " + strings.ToLower(e.Type)
+	}
+	var feature *makemkv.Title
+	for _, t := range disc.Titles {
+		e, ok := entries[t.ID]
+		if !ok {
+			e = CatalogEntry{}
+		}
+		switch {
+		case id.Kind == metadata.KindTV && strings.EqualFold(e.Type, "Episode") && e.Episode > 0:
+			season := e.Season
+			if season == 0 {
+				season = id.Season
+			}
+			sel.Picks = append(sel.Picks, Pick{Title: t, Season: season, Episode: e.Episode, EpisodeTitle: e.Title,
+				Reason: fmt.Sprintf("%s: S%02dE%02d", source, season, e.Episode)})
+		case id.Kind == metadata.KindMovie && strings.EqualFold(e.Type, "MainMovie"):
+			if feature == nil || t.Duration > feature.Duration {
+				if feature != nil {
+					sel.Skipped = append(sel.Skipped, Skipped{TitleID: feature.ID, Duration: feature.Duration, Reason: source + ": shorter main movie entry"})
+				}
+				feature = t
+			} else {
+				sel.Skipped = append(sel.Skipped, Skipped{TitleID: t.ID, Duration: t.Duration, Reason: source + ": shorter main movie entry"})
+			}
+		default:
+			sel.Skipped = append(sel.Skipped, Skipped{TitleID: t.ID, Duration: t.Duration, Reason: describe(e)})
+		}
+	}
+	if feature != nil {
+		sel.Picks = append(sel.Picks, Pick{Title: feature, Reason: source + ": main movie"})
+	}
+	sort.SliceStable(sel.Picks, func(i, j int) bool {
+		a, b := sel.Picks[i], sel.Picks[j]
+		if a.Season != b.Season {
+			return a.Season < b.Season
+		}
+		return a.Episode < b.Episode
+	})
+	for _, p := range sel.Picks {
+		if p.Episode > 0 && p.Season == id.Season && p.Episode >= sel.NextEpisode {
+			sel.NextEpisode = p.Episode + 1
+		}
+	}
+	if len(sel.Picks) == 0 {
+		return sel, ErrNothingToRip
+	}
+	return sel, nil
+}

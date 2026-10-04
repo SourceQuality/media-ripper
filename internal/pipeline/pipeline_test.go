@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/config"
+	"github.com/sourcequality/media-ripper/internal/discdb"
 	"github.com/sourcequality/media-ripper/internal/drive"
 	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/metadata"
@@ -186,6 +188,7 @@ func setup(t *testing.T, infoText string, provider metadata.Provider) *env {
 	cfg.MakeMKV.Retries = 0
 	cfg.PostProcess.Mode = "none"
 	cfg.Metadata.Provider = "none"
+	cfg.Metadata.TheDiscDB.Enabled = false // never reach GitHub from tests
 	if err := cfg.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -719,4 +722,71 @@ func TestRemuxActivity(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("no remux activity seen")
+}
+
+type fakeCatalog struct {
+	match *discdb.Match
+	err   error
+	calls int
+}
+
+func (f *fakeCatalog) Find(_ context.Context, kind discdb.Kind, title string, year int, scan []discdb.ScanTitle) (*discdb.Match, error) {
+	f.calls++
+	return f.match, f.err
+}
+
+// A catalogued disc is numbered by the catalogue, not the season counter:
+// disc 2 inserted first is still E05, and its extra is skipped by name.
+func TestCatalogNumbersOutOfOrderDisc(t *testing.T) {
+	id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, Season: 1, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test"}
+	e := setup(t, tvInfo, fakeProvider{id})
+	cat := &fakeCatalog{match: &discdb.Match{Release: "season-1-dvd", Disc: discdb.Disc{Name: "Disc 2"}, Matched: 2, Compared: 2, ByID: map[int]discdb.Title{
+		1: {Item: &discdb.Item{Type: "Episode", Title: "The One with the East German Laundry Detergent", Season: 1, Episode: 5}},
+		2: {Item: &discdb.Item{Type: "Extra", Title: "Gag reel"}},
+	}}}
+	e.m.deps.Catalog = cat
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+
+	e.drv.insert("fp-friends-2", "FRIENDS_S1_D2")
+	j := e.waitDone(t)
+	if j.Stage != StageDone || len(j.Outputs) != 1 {
+		t.Fatalf("stage=%s outputs=%+v log=%v", j.Stage, j.Outputs, j.Log)
+	}
+	want := filepath.Join(e.out, "TV Shows", "Friends (1994)", "Season 01", "Friends - S01E05 - The One with the East German Laundry Detergent.mkv")
+	if j.Outputs[0].Path != want {
+		t.Fatalf("delivered %s", j.Outputs[0].Path)
+	}
+	if next := e.st.NextEpisode("tmdb:1668", 1); next != 6 {
+		t.Fatalf("next episode = %d", next)
+	}
+	skippedExtra := false
+	for _, s := range j.Selection.Skipped {
+		if s.TitleID == 2 && strings.Contains(s.Reason, "Gag reel") {
+			skippedExtra = true
+		}
+	}
+	if !skippedExtra {
+		t.Fatalf("extra not skipped by name: %+v", j.Selection.Skipped)
+	}
+}
+
+// A catalogue that fails or knows nothing leaves the usual rules in charge.
+func TestCatalogFallback(t *testing.T) {
+	for _, cat := range []*fakeCatalog{{err: errors.New("github down")}, {}} {
+		id := &metadata.Identity{Kind: metadata.KindTV, Title: "Friends", Year: 1994, TMDBID: 1668, Season: 1, EpisodeRuntime: 22 * time.Minute, Confidence: 1, Source: "test"}
+		e := setup(t, tvInfo, fakeProvider{id})
+		e.m.deps.Catalog = cat
+		e.m.SetConfig(e.cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		go e.m.Run(ctx)
+		e.drv.insert("fp-friends-1", "FRIENDS_S1_D1")
+		j := e.waitDone(t)
+		cancel()
+		if j.Stage != StageDone || len(j.Outputs) != 2 || cat.calls != 1 {
+			t.Fatalf("err=%v: stage=%s outputs=%d calls=%d", cat.err, j.Stage, len(j.Outputs), cat.calls)
+		}
+	}
 }

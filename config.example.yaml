@@ -85,6 +85,14 @@ metadata:
     frames_per_minute: 20
     max_candidates: 8
     timeout: 20m
+  # TheDiscDB (thediscdb.com) catalogues what each title of a published disc
+  # is: the main movie, episode S01E03, a named extra. When an identified
+  # disc is in it, its titles, episode numbers and names are used instead of
+  # guessing from lengths, so TV discs can be ripped in any order. Read from
+  # the catalogue's GitHub repository and cached under the workspace.
+  thediscdb:
+    enabled: true
+    repo: TheDiscDb/data
 
 selection:
   # Audio/subtitle languages to keep (ISO 639-2 codes). Empty = keep every

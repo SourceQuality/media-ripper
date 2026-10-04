@@ -42,6 +42,10 @@
       { key: 'metadata.timeout', label: 'Lookup timeout', type: 'duration' },
       { key: 'metadata.label_overrides', label: 'Label overrides', type: 'map', hint: 'LABEL = Title to search', wide: true },
     ]},
+    { title: 'TheDiscDB', fields: [
+      { key: 'metadata.thediscdb.enabled', label: 'Use TheDiscDB disc maps', type: 'bool', hint: 'Episode numbers, names and extras for catalogued discs' },
+      { key: 'metadata.thediscdb.repo', label: 'Catalogue repository', type: 'text', hint: 'GitHub owner/name' },
+    ]},
     { title: 'Title card OCR', fields: [
       { key: 'metadata.ocr.enabled', label: 'Enabled', type: 'bool' },
       { key: 'metadata.ocr.tesseract', label: 'Tesseract binary', type: 'text' },
