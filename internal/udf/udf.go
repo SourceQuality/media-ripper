@@ -59,6 +59,10 @@ const (
 const (
 	fileTypeDir     = 4
 	fileTypeRegular = 5
+	// fileTypeRealTime (UDF 2.50, 2.3.5.2) marks files recorded for
+	// real-time playback: on Blu-ray every BDMV/STREAM/*.m2ts. It is a
+	// regular file for listing purposes.
+	fileTypeRealTime = 249
 )
 
 // ICB allocation descriptor types (ECMA-167 4/14.6.8).
@@ -604,7 +608,7 @@ func (v *volume) walk(dir *entry, prefix string, depth int) error {
 			if err := v.walk(e, prefix+name+"/", depth+1); err != nil {
 				return err
 			}
-		case fileTypeRegular:
+		case fileTypeRegular, fileTypeRealTime:
 			if e.size > math.MaxInt64 {
 				return fmt.Errorf("udf: %s%s: size out of range", prefix, name)
 			}
