@@ -60,6 +60,40 @@
   };
   const terminal = s => ['done', 'failed', 'skipped', 'cancelled'].includes(s);
 
+  // The disc in progress, one line per title that stays put while its
+  // state moves on: waiting → ripping → ripped → copying → delivered.
+  const liveList = j => {
+    const picks = (j.selection && j.selection.picks) || [];
+    if (!picks.length) return (j.activities || []).map(activity).join('');
+    const outs = Object.fromEntries((j.outputs || []).map(o => [o.title_id, o]));
+    const acts = Object.fromEntries((j.activities || []).map(a => [`${a.kind}:${a.item}`, a]));
+    const movie = j.identity && j.identity.kind === 'movie';
+    const ripDone = j.stage !== 'ripping';
+    const order = picks.map((p, i) => ({ p, i })).sort((a, b) => (a.p.season - b.p.season) || (a.p.episode - b.p.episode) || (a.i - b.i));
+    const lines = order.map(({ p, i }) => {
+      const item = p.episode ? `S${pad(p.season)}E${pad(p.episode)}` : `title ${p.title.id}`;
+      const o = outs[p.title.id];
+      const live = acts[`copy:${item}`] || acts[`remux:${item}`] || acts[`rip:${item}`];
+      let cls = 'pending', mark = '·', state = 'waiting', pct = -1;
+      if (o) {
+        cls = o.import && o.import !== 'imported' ? 'warn' : 'ok';
+        mark = cls === 'ok' ? '✓' : '!';
+        state = o.import || 'delivered';
+      } else if (live) {
+        cls = 'active'; mark = '▸'; pct = live.percent;
+        const verb = { rip: 'ripping', remux: 'remuxing', copy: 'copying' }[live.kind];
+        state = [pct >= 0 ? `${verb} ${Math.floor(pct)}%` : verb, fmtSpeed(live.speed), fmtETA(live.eta_seconds)].filter(Boolean).join(' · ');
+      } else if (ripDone || i < (j.current || 1) - 1) {
+        mark = '✓'; state = 'ripped, waiting to copy';
+      }
+      const code = p.episode ? `S${pad(p.season)}E${pad(p.episode)}${p.episode_end > p.episode ? '–E' + pad(p.episode_end) : ''}` : (movie ? 'Movie' : `Title ${p.title.id}`);
+      const name = p.episode ? (p.episode_title || '') : (movie ? discHeading(j) : (p.title.source_file || ''));
+      return `<li class="${cls}"${pct >= 0 ? ` style="--p:${pct.toFixed(1)}%"` : ''}><span class="mark">${mark}</span><span class="code">${esc(code)}</span><span class="name">${esc(name)}</span>
+        <span class="meta">${esc(fmtDur(p.title.duration))}</span><span class="meta">${esc(fmtBytes((o && o.size) || p.title.size_bytes || 0))}</span><span class="state" title="${esc(state)}">${esc(state)}</span></li>`;
+    });
+    return `<ul class="eps live">${lines.join('')}</ul>`;
+  };
+
   const driveCard = d => {
     const j = d.job && !terminal(d.job.stage) ? d.job : null;
     let body;
@@ -70,7 +104,7 @@
       body = `<div class="row"><span class="title">${esc(jobTitle(j))}</span><span class="stage">${esc(stageText(j))}</span><span class="spacer"></span>
         <button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
         <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
-        ${(j.activities || []).map(activity).join('')}`;
+        ${liveList(j)}`;
     } else {
       const status = d.status === 'disc-ok' ? (d.ignored ? 'Disc already ripped' : (d.label || 'Disc inserted')) : d.status === 'tray-open' ? 'Tray open' : d.status === 'no-disc' ? 'Empty' : d.status;
       const last = d.job ? `<span class="stage ${esc(d.job.stage)}">${esc(jobTitle(d.job))} · ${esc(d.job.stage)}</span>` : '';
