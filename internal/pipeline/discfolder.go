@@ -2,13 +2,16 @@ package pipeline
 
 import (
 	"archive/zip"
+	"bytes"
 	"compress/flate"
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -175,11 +178,56 @@ func (m *Manager) keepScanLog(ctx context.Context, id, device string) error {
 	return atomicWriteFile(p, []byte(out))
 }
 
+// logURLPattern is the address thediscdb.com gives for a disc's MakeMKV
+// log, found inside the command it shows ("… | curl … <address>").
+var logURLPattern = regexp.MustCompile(`https://thediscdb\.com/api/contribute/[A-Za-z0-9_-]+/discs/[A-Za-z0-9_-]+/logs`)
+
+// Errors from SendScanLog that are the request's fault, not TheDiscDB's.
+var (
+	ErrLogURL    = errors.New("paste the command or address thediscdb.com shows (https://thediscdb.com/api/contribute/…/logs)")
+	ErrNoScanLog = errors.New("no MakeMKV log was kept for this disc; read it from the disc first")
+)
+
+// LogUploadURL finds TheDiscDB's log address in what a person pasted.
+func LogUploadURL(text string) (string, bool) {
+	u := logURLPattern.FindString(text)
+	return u, u != ""
+}
+
+// SendScanLog posts a job's kept MakeMKV log to TheDiscDB, as the command
+// on its contribute page does, and returns its answer.
+func (m *Manager) SendScanLog(ctx context.Context, id, pasted string) (int, string, error) {
+	url, ok := LogUploadURL(pasted)
+	if !ok {
+		return 0, "", ErrLogURL
+	}
+	log, err := m.ScanLog(id)
+	if err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(log))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "text/plain")
+	client := m.deps.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: time.Minute}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	return resp.StatusCode, strings.TrimSpace(string(body)), nil
+}
+
 // ScanLog returns a job's kept MakeMKV log.
 func (m *Manager) ScanLog(id string) ([]byte, error) {
 	b, err := os.ReadFile(m.logFile(id))
 	if err != nil {
-		return nil, errors.New("no MakeMKV log was kept for this disc; read it from the disc first")
+		return nil, ErrNoScanLog
 	}
 	return b, nil
 }
