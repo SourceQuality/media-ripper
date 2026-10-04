@@ -49,7 +49,7 @@
     const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), sec = s % 60;
     return (h ? `${h}h ${m}m` : m ? `${m}m ${sec}s` : `${sec}s`) + ' left';
   };
-  const actName = { rip: 'Ripping', remux: 'Remuxing', copy: 'Copying' };
+  const actName = { rip: 'Ripping', remux: 'Remuxing', copy: 'Copying', backup: 'Backing up' };
   const activity = a => {
     const size = a.total > 0 ? `${fmtBytes(a.done)} / ${fmtBytes(a.total)}` : fmtBytes(a.done);
     const nums = [size, fmtSpeed(a.speed), fmtETA(a.eta_seconds)].filter(Boolean).join(' · ');
@@ -91,7 +91,10 @@
       return `<li class="${cls}"${pct >= 0 ? ` style="--p:${pct.toFixed(1)}%"` : ''}><span class="mark">${mark}</span><span class="code">${esc(code)}</span><span class="name">${esc(name)}</span>
         <span class="meta">${esc(fmtDur(p.title.duration))}</span><span class="meta">${esc(fmtBytes((o && o.size) || p.title.size_bytes || 0))}</span><span class="state" title="${esc(state)}">${esc(state)}</span></li>`;
     });
-    return `<ul class="eps live">${lines.join('')}</ul>`;
+    // Steps not tied to one title, like the full-disc backup.
+    const titled = new Set(order.map(({ p }) => p.episode ? `S${pad(p.season)}E${pad(p.episode)}` : `title ${p.title.id}`));
+    const other = (j.activities || []).filter(a => !titled.has(a.item)).map(activity).join('');
+    return `<ul class="eps live">${lines.join('')}</ul>${other}`;
   };
 
   const driveCard = d => {
@@ -213,6 +216,7 @@
       ${outcome ? `<div class="outcome ${esc(j.stage)}">${esc(outcome)}</div>` : ''}
       ${lines ? `<ul class="eps">${lines}</ul>` : ''}
       ${skipped ? `<div class="sub muted">${esc(skipped)}</div>` : ''}
+      ${j.backup ? `<div class="sub muted">Full-disc backup: ${esc(j.backup.path)} (${esc(fmtBytes(j.backup.size))})</div>` : ''}
       ${warnings}
       <div class="row end"><button onclick="act.detail('${esc(j.id)}')">Details</button></div>
     </div>`;

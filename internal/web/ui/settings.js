@@ -22,6 +22,8 @@
       { key: 'output.file_mode', label: 'File mode', type: 'mode' },
       { key: 'output.keep_workspace_on_error', label: 'Keep workspace on error', type: 'bool' },
       { key: 'output.resume', label: 'Resume interrupted discs', type: 'bool' },
+      { key: 'output.backup', label: 'Full-disc backup', type: 'select', options: ['off', 'also', 'only'], hint: 'also: titles and a decrypted copy of the disc; only: just the copy' },
+      { key: 'output.backup_path', label: 'Backup folder', type: 'text', wide: true, hint: 'Empty: _backups under the output path' },
       { key: 'output.resume_max_age', label: 'Keep partial rips for', type: 'duration' },
     ]},
     { title: 'MakeMKV', fields: [

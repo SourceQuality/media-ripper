@@ -416,3 +416,48 @@ func (c *Client) Probe(ctx context.Context) (string, error) {
 	// "disc:9999" does not exist, so a non-zero exit is expected here.
 	return version, nil
 }
+
+// Backup copies the whole disc, decrypted, into outDir (a BDMV or VIDEO_TS
+// folder tree that plays like the disc), reporting progress like Rip.
+func (c *Client) Backup(ctx context.Context, device, outDir string, onProgress func(Progress)) error {
+	if c.RipTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.RipTimeout)
+		defer cancel()
+	}
+	if err := os.MkdirAll(outDir, 0o775); err != nil {
+		return err
+	}
+	args := append(c.baseArgs(), "backup", "--decrypt", "dev:"+device, outDir)
+	start := time.Now()
+	var last []string // the final messages, to explain a failure
+	_, err := c.run(ctx, args, func(key string, f []string) {
+		switch key {
+		case "PRGV":
+			if len(f) >= 3 && onProgress != nil {
+				p := Progress{Current: atoi64(f[0]), Total: atoi64(f[1]), Max: atoi64(f[2]), Elapsed: time.Since(start)}
+				if p.Max > 0 {
+					p.Percent = float64(p.Total) / float64(p.Max) * 100
+				}
+				onProgress(p)
+			}
+		case "PRGC":
+			if len(f) >= 3 && onProgress != nil {
+				onProgress(Progress{Task: f[2], Elapsed: time.Since(start), Percent: -1})
+			}
+		case "MSG":
+			if len(f) >= 4 {
+				last = append(last, f[3])
+				if len(last) > 3 {
+					last = last[1:]
+				}
+			}
+		}
+	})
+	// The exit status is the verdict: MakeMKV's success message itself
+	// says "... 0 failed".
+	if err != nil {
+		return fmt.Errorf("makemkvcon backup: %w: %s", err, strings.Join(last, "; "))
+	}
+	return nil
+}

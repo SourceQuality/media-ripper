@@ -57,7 +57,7 @@ func TestCheckSpace(t *testing.T) {
 				_ = rs.markDelivered(p.Title.ID, Output{Path: f, Size: 1})
 			}
 		}
-		warn, err := checkSpace(dir, "/lib", sel, rs, space)
+		warn, err := checkSpace(dir, "/lib", sel, rs, 0, space)
 		switch {
 		case c.wantErr != "" && (err == nil || !strings.Contains(err.Error(), c.wantErr)):
 			t.Errorf("%s: err = %v, want %q", c.name, err, c.wantErr)
@@ -108,5 +108,22 @@ func TestStorageMonitor(t *testing.T) {
 	e.m.checkStorage(context.Background())
 	if st := e.m.storage.get(); st.State != "unreachable" {
 		t.Fatalf("stuck probe: %+v", st)
+	}
+}
+
+func TestCheckSpaceCountsTheBackup(t *testing.T) {
+	space := func(path string) (int64, uint64, error) {
+		if path == "/lib" {
+			return 40e9, 2, nil
+		}
+		return 500e9, 1, nil
+	}
+	sel := &selector.Selection{Picks: []selector.Pick{{Title: &makemkv.Title{ID: 1, SizeBytes: 5e9}}}}
+	rs := openResume(t.TempDir(), &Job{Fingerprint: "fp"}, true)
+	if _, err := checkSpace(t.TempDir(), "/lib", sel, rs, 0, space); err != nil {
+		t.Fatalf("titles alone fit: %v", err)
+	}
+	if _, err := checkSpace(t.TempDir(), "/lib", sel, rs, 45e9, space); err == nil || !strings.Contains(err.Error(), "library") {
+		t.Fatalf("a 45 GB backup does not fit in 40 GB: %v", err)
 	}
 }
