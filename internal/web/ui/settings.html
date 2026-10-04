@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings · Media Ripper</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='10' fill='%236b7cff'/%3E%3Ccircle cx='12' cy='12' r='3' fill='%23fff'/%3E%3C/svg%3E">
+</head>
+<body>
+<header>
+  <a class="nav" href="./">Media Ripper</a>
+  <span class="muted">/ Settings</span>
+  <div class="spacer"></div>
+  <button id="theme" class="icon" title="Theme" aria-label="Toggle theme">◐</button>
+</header>
+<main>
+  <form id="settings" autocomplete="off"></form>
+  <div class="savebar">
+    <span id="save-status" class="muted"></span>
+    <div class="spacer"></div>
+    <button type="button" id="reload">Discard</button>
+    <button type="button" id="save" class="primary">Save</button>
+  </div>
+</main>
+<script src="theme.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

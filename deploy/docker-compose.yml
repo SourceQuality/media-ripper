@@ -1,0 +1,27 @@
+services:
+  media-ripper:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        MAKEMKV_VERSION: "1.17.9"
+    image: media-ripper:latest
+    container_name: media-ripper
+    restart: unless-stopped
+    environment:
+      MR_TMDB_API_KEY: "${MR_TMDB_API_KEY:-}"
+      MR_MAKEMKV_KEY: "${MR_MAKEMKV_KEY:-}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - ./config:/config
+      - /mnt/media:/output          # your library
+      - /var/lib/media-ripper:/workspace   # local scratch, one disc per drive
+    ports:
+      - "8080:8080"
+    # MakeMKV talks to Blu-ray drives through SCSI generic (/dev/sgN) as well
+    # as the block device. Map both, or use privileged: true if the sg number
+    # is not stable on your machine (`ls -l /dev/sg* /dev/sr*`).
+    devices:
+      - /dev/sr0:/dev/sr0
+      - /dev/sg0:/dev/sg0
+    # privileged: true

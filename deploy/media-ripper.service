@@ -1,0 +1,33 @@
+[Unit]
+Description=media-ripper: unattended disc ripping
+Documentation=https://github.com/sourcequality/media-ripper
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=media-ripper
+Group=media-ripper
+SupplementaryGroups=cdrom
+ExecStart=/usr/local/bin/media-ripper run -config /etc/media-ripper/config.yaml
+Restart=always
+RestartSec=5
+# MakeMKV keeps its settings here.
+Environment=HOME=/var/lib/media-ripper
+StateDirectory=media-ripper
+WorkingDirectory=/var/lib/media-ripper
+# Ripping is long and I/O heavy; keep the service from being OOM-killed first.
+OOMScoreAdjust=-500
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=4
+# Hardening that still allows device access and the library mount.
+NoNewPrivileges=true
+ProtectSystem=full
+# The settings page saves config.yaml here (write to a temp file, then rename).
+ReadWritePaths=/etc/media-ripper
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
