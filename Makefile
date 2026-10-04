@@ -31,6 +31,8 @@ release:
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o dist/$(BINARY)-linux-amd64 ./cmd/$(BINARY)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o dist/$(BINARY)-linux-arm64 ./cmd/$(BINARY)
 	CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build $(GOFLAGS) -ldflags '$(LDFLAGS)' -o dist/$(BINARY)-linux-armv7 ./cmd/$(BINARY)
+	# What the README's quick start installs next to the binary.
+	cp config.example.yaml deploy/media-ripper.service deploy/99-media-ripper.rules dist/
 
 clean:
 	rm -rf bin dist

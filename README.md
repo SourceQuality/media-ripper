@@ -1,5 +1,64 @@
 # media-ripper
 
+## Quick start
+
+You need a Linux machine with a Blu-ray or DVD drive, and
+[MakeMKV](https://www.makemkv.com/) 2.x installed with a registration key or
+the [current beta key](https://forum.makemkv.com/forum/viewtopic.php?t=1053).
+MakeMKV is not part of the download; see [Install](#install) for builds that
+include it.
+
+1. **Download** the latest release: the binary for your machine
+   (`amd64`, `arm64` for a Pi 4/5, or `armv7`) and the three setup files.
+
+   ```sh
+   gh release download --repo SourceQuality/media-ripper \
+     -p 'media-ripper-linux-amd64' -p config.example.yaml \
+     -p media-ripper.service -p 99-media-ripper.rules
+   ```
+
+   The repository is private, so use [`gh`](https://cli.github.com/) (signed
+   in with access) or download them from the Releases page in a browser.
+
+2. **Install** the binary, a service user, the config and the service:
+
+   ```sh
+   sudo install -m 0755 media-ripper-linux-amd64 /usr/local/bin/media-ripper
+   sudo useradd --system --home-dir /var/lib/media-ripper --shell /usr/sbin/nologin --groups cdrom media-ripper
+   sudo install -d -o media-ripper -g media-ripper -m 0750 /etc/media-ripper
+   sudo install -o media-ripper -g media-ripper -m 0640 config.example.yaml /etc/media-ripper/config.yaml
+   sudo install -m 0644 99-media-ripper.rules /etc/udev/rules.d/
+   sudo install -m 0644 media-ripper.service /etc/systemd/system/
+   sudo udevadm control --reload && sudo udevadm trigger
+   ```
+
+3. **Configure** `/etc/media-ripper/config.yaml`. Only these need you:
+   - `drives`, e.g. `[/dev/sr0]`
+   - `output.path`, where your library lives
+   - `makemkv.key`
+   - something to identify discs: `arr.radarr` / `arr.sonarr` (URL and API
+     key) or `metadata.tmdb_api_key`
+
+   Everything else can wait for the Settings page.
+
+4. **Check and start:**
+
+   ```sh
+   sudo -u media-ripper media-ripper check -config /etc/media-ripper/config.yaml
+   sudo systemctl enable --now media-ripper
+   ```
+
+   `check` prints the MakeMKV version and the drive's state, and fails with
+   the reason if MakeMKV's key or beta has expired.
+
+5. **Open** `http://<this machine>:8080` and insert a disc.
+
+To update, download the new binary, install it over the old one and
+`sudo systemctl restart media-ripper`. A disc in the middle of a rip
+resumes where it stopped.
+
+## What it is
+
 Insert a disc. Walk away. Come back to the movie or the episodes in your
 library, named for Plex or Jellyfin, with every audio track and subtitle, and
 the tray open for the next one.
@@ -98,7 +157,9 @@ The binaries on the GitHub releases page are media-ripper only. MakeMKV is
 a separate program you install yourself (makemkv.com, or the installer and
 Docker image below, which build it on your machine): its licence does not
 allow shipping it. `media-ripper check` reports the MakeMKV version and
-fails when the beta has expired or the stored key is invalid.
+fails when the beta has expired or the stored key is invalid. Each release
+also carries `config.example.yaml`, the systemd unit and the udev rule; the
+[Quick start](#quick-start) installs them.
 
 ### Debian / Ubuntu service
 
