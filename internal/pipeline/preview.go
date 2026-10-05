@@ -180,7 +180,7 @@ func (m *Manager) makeThumbnails(ctx context.Context, job *Job) {
 		if _, ok := playlistOf(t.Source); !ok {
 			continue
 		}
-		if _, err := m.Thumbnail(ctx, job.ID, t.ID); err != nil {
+		if _, err := m.Thumbnail(ctx, job.ID, t.ID); err != nil && ctx.Err() == nil {
 			job.logf("preview of title %d: %v", t.ID, err)
 		}
 	}

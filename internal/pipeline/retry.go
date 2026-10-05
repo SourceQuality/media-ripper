@@ -16,7 +16,7 @@ func importFailed(s Job) bool {
 		return false
 	}
 	for _, o := range s.Outputs {
-		if strings.HasPrefix(o.Import, "not imported") {
+		if strings.HasPrefix(o.Import, "not imported") || strings.HasPrefix(o.Import, "not placed") {
 			return true
 		}
 	}
@@ -62,7 +62,7 @@ func (m *Manager) RetryImport(ctx context.Context, id string) (Job, error) {
 		// The outcome of this attempt replaces the last one's.
 		var keep []string
 		for _, w := range j.Warnings {
-			if !strings.HasPrefix(w, string(client.Kind)+" ") {
+			if !strings.HasPrefix(w, string(client.Kind)+" ") && !strings.HasPrefix(w, string(client.Kind)+":") {
 				keep = append(keep, w)
 			}
 		}

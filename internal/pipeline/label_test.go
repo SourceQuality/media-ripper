@@ -398,3 +398,55 @@ func TestLingeringHelperDoesNotHangReads(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// An extra that cannot be placed (the library folder belongs to Radarr's
+// user) is marked "not placed" and placed by a retry once it can be.
+func TestExtraNotPlacedThenRetried(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes anywhere")
+	}
+	e := manualEnv(t, matrixWithPlaylists)
+	radarrRoot := filepath.Join(e.out, "radarr-movies")
+	srv, _ := fakeRadarr(t, radarrRoot, "/remote/library")
+	defer srv.Close()
+	e.cfg.Arr.Radarr = config.ArrApp{Enabled: true, URL: srv.URL, APIKey: "k", RootFolder: radarrRoot, AddMissing: true, ImportMode: "move",
+		PathMap: map[string]string{e.out: "/remote/library"}}
+	e.m.SetConfig(e.cfg)
+	movieDir := filepath.Join(radarrRoot, "The Matrix (1999)")
+	if err := os.MkdirAll(movieDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Chmod(movieDir, 0o555) // as Radarr's folder is to media-ripper
+	t.Cleanup(func() { _ = os.Chmod(movieDir, 0o755) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitStage(t, StageLabelling)
+	if err := e.m.SubmitLabels(j.ID, LabelDecision{Action: "rip", Labels: []TitleLabel{
+		{TitleID: 0, Kind: LabelMain},
+		{TitleID: 2, Kind: LabelTrailer, Name: "Teaser", Rip: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	done := e.waitDone(t)
+	if !importFailed(done) || !strings.HasPrefix(done.Outputs[0].Import, "not placed: media-ripper may not write") || len(done.Warnings) != 1 {
+		t.Fatalf("outputs=%+v warnings=%v", done.Outputs, done.Warnings)
+	}
+	if _, err := os.Stat(done.Outputs[0].Path); err != nil {
+		t.Fatalf("extra lost: %v", err)
+	}
+
+	_ = os.Chmod(movieDir, 0o755) // the group was given
+	r, err := e.m.RetryImport(ctx, done.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(movieDir, "Trailers", "Teaser.mkv")
+	if importFailed(r) || r.Outputs[0].Path != want || len(r.Warnings) != 0 {
+		t.Fatalf("after retry: outputs=%+v warnings=%v", r.Outputs, r.Warnings)
+	}
+	if _, err := os.Stat(want); err != nil {
+		t.Fatal(err)
+	}
+}

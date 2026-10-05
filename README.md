@@ -109,15 +109,28 @@ first (see below).
 ## Radarr and Sonarr
 
 Enable `arr.radarr` and/or `arr.sonarr` with the URL and API key. Movies
-then go to `output.path/_incoming/` and media-ripper calls Radarr's
-`DownloadedMoviesScan`; TV goes the same way to Sonarr's
-`DownloadedEpisodesScan`. The app renames and moves the files into its own
-root folder with its own naming rules and refreshes Plex or Jellyfin. If
-the title is not in the library yet it is added first (unmonitored by
-default) using `root_folder` and `quality_profile`. When Radarr runs in a
-different container, `path_map` translates the staging path into what
-Radarr sees. If the import fails the files stay in `_incoming/` and the job
-shows a warning; the rip itself still counts as done.
+then go to `output.path/_incoming/` and media-ripper asks Radarr to import
+exactly those files (a ManualImport, as a copy); TV goes the same way to
+Sonarr. media-ripper then checks the app's own file list, and with
+`import_mode: move` removes the staged copies itself, so the app never
+needs write access to the staging folder. The app renames the files into
+its own root folder and refreshes Plex or Jellyfin. If the title is not in
+the library yet it is added first (unmonitored by default) using
+`root_folder` and `quality_profile`. When Radarr runs in a different
+container or machine, `path_map` translates this machine's paths into what
+Radarr sees (and back). If an import fails or is cut short by a restart,
+the files stay in `_incoming/`, the job offers **Retry import**, and an
+interrupted import runs again at the next start.
+
+**Extras** (manual mode) are not Radarr's or Sonarr's to import: they are
+kept in `_incoming/_extras/` until the movie or show is imported, then
+moved into its library folder, in the subfolders Plex and Jellyfin read
+(`Featurettes`, `Trailers`, `Behind The Scenes`…). That folder belongs to
+the app's user, so media-ripper needs its group to write there: for
+example, when Radarr runs as uid 1000 and its folders are group-writable,
+`sudo usermod -aG <group of uid 1000> media-ripper` and restart
+media-ripper. Until then extras stay in staging, marked "not placed", and
+**Retry import** places them later.
 
 Radarr and Sonarr also work as a metadata source: with `metadata.provider:
 auto` their lookup endpoints are used after TMDB (or instead of it when no
