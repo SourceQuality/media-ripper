@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/arr"
@@ -43,7 +44,7 @@ func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 		if item, err := m.ensureInLibrary(ctx, job, client, s.Identity); err == nil {
 			m.placeExtras(job, client, item)
 		} else {
-			job.warn(fmt.Sprintf("%s: extras left in staging: %v", client.Kind, err))
+			markPlaced(job, client.Kind, fmt.Sprintf("not placed: %v", err))
 		}
 		return
 	}
@@ -178,6 +179,26 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 	return nil
 }
 
+// markPlaced records why the job's extras stayed in staging. The warning
+// starts with the app's name, so a successful retry clears it.
+func markPlaced(job *Job, kind arr.Kind, why string) {
+	job.warn(fmt.Sprintf("%s: extras left in staging: %s", kind, strings.TrimPrefix(why, "not placed: ")))
+	job.set(func(j *Job) {
+		for i := range j.Outputs {
+			if j.Outputs[i].Extra != "" {
+				j.Outputs[i].Import = why
+			}
+		}
+	})
+}
+
+func firstValue(m map[string]string) string {
+	for _, v := range m {
+		return v
+	}
+	return ""
+}
+
 // mainOutputs are the outputs Radarr/Sonarr import: all but extras.
 func mainOutputs(outs []Output) []Output {
 	var main []Output
@@ -204,33 +225,58 @@ func (m *Manager) placeExtras(job *Job, client *arr.Client, item arr.Item) {
 		return
 	}
 	if item.Path == "" {
-		job.warn(fmt.Sprintf("%s did not say where the library folder is; extras left in staging", client.Kind))
+		markPlaced(job, client.Kind, fmt.Sprintf("not placed: %s did not say where the movie's folder is", client.Kind))
 		return
 	}
 	lib := client.LocalPath(item.Path)
 	cfg := job.rt.cfg
 	staging := filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir, extrasSubdir, filepath.Base(s.ID))
+	// New folders and files take the library folder's group, so Radarr or
+	// Sonarr (often another user) can still manage them.
+	gid := -1
+	if st, err := os.Stat(lib); err == nil {
+		if sys, ok := st.Sys().(*syscall.Stat_t); ok {
+			gid = int(sys.Gid)
+		}
+	}
 	moved := map[string]string{}
+	failed := map[string]string{}
 	for _, o := range extras {
+		if _, err := os.Stat(o.Path); err != nil {
+			continue // placed before
+		}
 		dst := filepath.Join(lib, o.Extra, filepath.Base(o.Path))
 		if !cfg.Output.Overwrite {
 			dst = uniquePath(dst)
 		}
-		if err := mkdirAll(filepath.Dir(dst), os.FileMode(cfg.Output.DirMode)); err != nil {
-			job.warn(fmt.Sprintf("extras left in staging: %v", err))
-			return
+		err := mkdirAll(filepath.Dir(dst), os.FileMode(cfg.Output.DirMode))
+		if err == nil {
+			_, err = moveFile(context.Background(), o.Path, dst, os.FileMode(cfg.Output.FileMode), nil)
 		}
-		if _, err := moveFile(context.Background(), o.Path, dst, os.FileMode(cfg.Output.FileMode), nil); err != nil {
-			job.warn(fmt.Sprintf("%s left in staging: %v", filepath.Base(o.Path), err))
+		if err != nil {
+			why := err.Error()
+			if errors.Is(err, os.ErrPermission) {
+				why = fmt.Sprintf("media-ripper may not write in %s's folder %s (give the media-ripper user that folder's group, e.g. sudo usermod -aG <group> media-ripper, then restart it)", client.Kind, lib)
+			}
+			failed[o.Path] = "not placed: " + why
 			continue
+		}
+		if gid >= 0 {
+			_ = os.Lchown(filepath.Dir(dst), -1, gid)
+			_ = os.Lchown(dst, -1, gid)
 		}
 		moved[o.Path] = dst
 		job.logf("placed %s in %s", filepath.Base(dst), filepath.Dir(dst))
 	}
+	if len(failed) > 0 {
+		job.warn(fmt.Sprintf("%s: %d extra(s) left in staging: %s", client.Kind, len(failed), strings.TrimPrefix(firstValue(failed), "not placed: ")))
+	}
 	job.set(func(j *Job) {
 		for i := range j.Outputs {
 			if dst, ok := moved[j.Outputs[i].Path]; ok {
-				j.Outputs[i].Path = dst
+				j.Outputs[i].Path, j.Outputs[i].Import = dst, ""
+			} else if why, ok := failed[j.Outputs[i].Path]; ok {
+				j.Outputs[i].Import = why
 			}
 		}
 	})

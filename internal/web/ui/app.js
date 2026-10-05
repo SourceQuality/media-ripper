@@ -219,7 +219,7 @@
   };
 
   // Files Radarr/Sonarr did not take are still in staging: offer a retry.
-  const importFailed = j => j.stage === 'done' && (j.outputs || []).some(o => (o.import || '').startsWith('not imported'));
+  const importFailed = j => j.stage === 'done' && (j.outputs || []).some(o => /^not (imported|placed)/.test(o.import || ''));
   const icon = { done: '✓', failed: '✕', cancelled: '–', skipped: '↷', review: '?' };
   const historyCard = j => {
     const warnings = (j.warnings || []).map(w => `<div class="warning">${esc(w)}</div>`).join('');
