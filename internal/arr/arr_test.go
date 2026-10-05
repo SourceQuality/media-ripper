@@ -187,3 +187,17 @@ func TestImportUnsuccessfulResult(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestLocalPathUndoesTheMap(t *testing.T) {
+	c := &Client{Cfg: config.ArrApp{PathMap: map[string]string{"/mnt/Media": "/mnt/media", "/mnt/Media/Rips/_incoming": "/data/incoming", "/srv": "D:\\Media"}}}
+	for remote, want := range map[string]string{
+		"/mnt/media/Rips/movies/The Thing (1982)": "/mnt/Media/Rips/movies/The Thing (1982)",
+		"/data/incoming/x":                        "/mnt/Media/Rips/_incoming/x",
+		"D:\\Media\\TV\\Show":                     "/srv/TV/Show",
+		"/elsewhere/y":                            "/elsewhere/y",
+	} {
+		if got := c.LocalPath(remote); got != want {
+			t.Errorf("LocalPath(%q) = %q, want %q", remote, got, want)
+		}
+	}
+}

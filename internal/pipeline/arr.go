@@ -38,6 +38,15 @@ func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 	if client == nil || len(s.Outputs) == 0 {
 		return
 	}
+	if len(mainOutputs(s.Outputs)) == 0 {
+		// Only extras: they go next to what is already in the library.
+		if item, err := m.ensureInLibrary(ctx, job, client, s.Identity); err == nil {
+			m.placeExtras(job, client, item)
+		} else {
+			job.warn(fmt.Sprintf("%s: extras left in staging: %v", client.Kind, err))
+		}
+		return
+	}
 	job.setStage(StageHandoff, "importing into "+string(client.Kind))
 	// Marked before the import starts, so even a crash leaves it to retry.
 	if err := m.deps.Store.SetImportPending(job.ID, true); err != nil {
@@ -80,7 +89,10 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 	if item.Path != "" {
 		job.logf("%s library path: %s", client.Kind, item.Path)
 	}
-	dir := commonDir(s.Outputs)
+	// Extras are not Radarr's or Sonarr's to import; they follow below.
+	outs := mainOutputs(s.Outputs)
+	s.Outputs = outs
+	dir := commonDir(outs)
 	if dir == "" {
 		return errors.New("no delivered files")
 	}
@@ -162,7 +174,81 @@ func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s
 	if len(missing) > 0 {
 		return fmt.Errorf("imported %d of %d files; not taken: %s", len(s.Outputs)-len(res.Rejected)-len(missing), len(s.Outputs), strings.Join(missing, ", "))
 	}
+	m.placeExtras(job, client, item)
 	return nil
+}
+
+// mainOutputs are the outputs Radarr/Sonarr import: all but extras.
+func mainOutputs(outs []Output) []Output {
+	var main []Output
+	for _, o := range outs {
+		if o.Extra == "" {
+			main = append(main, o)
+		}
+	}
+	return main
+}
+
+// placeExtras moves the disc's extras from their staging folder into the
+// library folder of the movie or show Radarr/Sonarr imported, where Plex
+// and Jellyfin find them ("…/Featurettes/The Making of.mkv").
+func (m *Manager) placeExtras(job *Job, client *arr.Client, item arr.Item) {
+	s := job.Snapshot()
+	var extras []Output
+	for _, o := range s.Outputs {
+		if o.Extra != "" {
+			extras = append(extras, o)
+		}
+	}
+	if len(extras) == 0 {
+		return
+	}
+	if item.Path == "" {
+		job.warn(fmt.Sprintf("%s did not say where the library folder is; extras left in staging", client.Kind))
+		return
+	}
+	lib := client.LocalPath(item.Path)
+	cfg := job.rt.cfg
+	staging := filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir, extrasSubdir, filepath.Base(s.ID))
+	moved := map[string]string{}
+	for _, o := range extras {
+		dst := filepath.Join(lib, o.Extra, filepath.Base(o.Path))
+		if !cfg.Output.Overwrite {
+			dst = uniquePath(dst)
+		}
+		if err := mkdirAll(filepath.Dir(dst), os.FileMode(cfg.Output.DirMode)); err != nil {
+			job.warn(fmt.Sprintf("extras left in staging: %v", err))
+			return
+		}
+		if _, err := moveFile(context.Background(), o.Path, dst, os.FileMode(cfg.Output.FileMode), nil); err != nil {
+			job.warn(fmt.Sprintf("%s left in staging: %v", filepath.Base(o.Path), err))
+			continue
+		}
+		moved[o.Path] = dst
+		job.logf("placed %s in %s", filepath.Base(dst), filepath.Dir(dst))
+	}
+	job.set(func(j *Job) {
+		for i := range j.Outputs {
+			if dst, ok := moved[j.Outputs[i].Path]; ok {
+				j.Outputs[i].Path = dst
+			}
+		}
+	})
+	removeEmptyTree(staging) // an extra that could not be moved stays
+}
+
+// removeEmptyTree removes dir and the folders under it that hold no file.
+func removeEmptyTree(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			removeEmptyTree(filepath.Join(dir, e.Name()))
+		}
+	}
+	_ = os.Remove(dir) // fails, harmlessly, while anything is left in it
 }
 
 // ensureInLibrary finds the title in the app, adding it when allowed.
@@ -276,7 +362,14 @@ func importQuality(kind arr.Kind, s Job) string {
 		return ""
 	}
 	res := ""
-	if v := s.Selection.Picks[0].Title.Video(); v != nil {
+	pick := s.Selection.Picks[0]
+	for _, p := range s.Selection.Picks {
+		if p.Extra == "" { // the feature's quality, not a bonus clip's
+			pick = p
+			break
+		}
+	}
+	if v := pick.Title.Video(); v != nil {
 		res = resolutionName(v.VideoSize)
 	}
 	if res != "1080p" && res != "2160p" {
@@ -292,7 +385,9 @@ func importQuality(kind arr.Kind, s Job) string {
 func markImports(job *Job, status func(o Output) string) {
 	job.set(func(j *Job) {
 		for i := range j.Outputs {
-			j.Outputs[i].Import = status(j.Outputs[i])
+			if j.Outputs[i].Extra == "" { // extras are placed, not imported
+				j.Outputs[i].Import = status(j.Outputs[i])
+			}
 		}
 	})
 }

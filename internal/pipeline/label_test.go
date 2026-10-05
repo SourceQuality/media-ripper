@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sourcequality/media-ripper/internal/config"
 	"github.com/sourcequality/media-ripper/internal/metadata"
 )
 
@@ -118,18 +119,23 @@ func TestManualModeLabelThenRip(t *testing.T) {
 	}
 	labels := []TitleLabel{
 		{TitleID: 0, Kind: LabelMain, Rip: true},
-		{TitleID: 1, Kind: LabelExtra, Name: "Behind the Matrix", Rip: true}, // extras are not ripped (yet)
-		{TitleID: 2, Kind: LabelTrailer, Name: "Theatrical trailer"},
+		{TitleID: 1, Kind: LabelExtra, Category: "behind-the-scenes", Name: "Behind the Matrix", Rip: true},
+		{TitleID: 2, Kind: LabelTrailer, Name: "Theatrical trailer"}, // named, not ripped
 	}
 	if err := e.m.SubmitLabels(j.ID, LabelDecision{Action: "rip", Labels: labels}); err != nil {
 		t.Fatal(err)
 	}
 	done := e.waitDone(t)
-	if done.Stage != StageDone || len(done.Outputs) != 1 || done.Outputs[0].TitleID != 0 {
+	if done.Stage != StageDone || len(done.Outputs) != 2 {
 		t.Fatalf("ripped: stage=%s outputs=%+v err=%s", done.Stage, done.Outputs, done.Error)
 	}
-	if data, _ := os.ReadFile(ripLog); strings.Join(strings.Fields(string(data)), ",") != "0" {
-		t.Fatalf("rips = %q, want only title 0", data)
+	if data, _ := os.ReadFile(ripLog); strings.Join(strings.Fields(string(data)), ",") != "0,1" {
+		t.Fatalf("rips = %q, want titles 0 and 1", data)
+	}
+	// The extra sits next to the movie, where Plex and Jellyfin look.
+	movieDir := filepath.Join(e.out, "Movies", "The Matrix (1999)")
+	if _, err := os.Stat(filepath.Join(movieDir, "Behind The Scenes", "Behind the Matrix.mkv")); err != nil {
+		t.Fatalf("extra not next to the movie: %v (outputs %+v)", err, done.Outputs)
 	}
 	text, err := e.m.ContributionText(done.ID)
 	if err != nil || !strings.Contains(text, "Extra: Behind the Matrix") || !strings.Contains(text, "Trailer: Theatrical trailer") {
@@ -245,5 +251,106 @@ func TestDecisionStopsPreview(t *testing.T) {
 	// And no new preview starts once the decision is made.
 	if err := e.m.Preview(context.Background(), j.ID, 0, 0, &bytes.Buffer{}); err == nil {
 		t.Fatal("preview after the decision")
+	}
+}
+
+// With Radarr, extras are kept out of the import (it would take one for
+// the movie) and placed in its library folder afterwards.
+func TestExtrasPlacedAfterRadarrImport(t *testing.T) {
+	e := manualEnv(t, matrixWithPlaylists)
+	radarrRoot := filepath.Join(e.out, "radarr-movies")
+	srv, calls := fakeRadarr(t, radarrRoot, "/remote/library")
+	defer srv.Close()
+	e.cfg.Arr.Radarr = config.ArrApp{Enabled: true, URL: srv.URL, APIKey: "k", RootFolder: radarrRoot, AddMissing: true, ImportMode: "move",
+		PathMap: map[string]string{e.out: "/remote/library"}}
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitStage(t, StageLabelling)
+	if err := e.m.SubmitLabels(j.ID, LabelDecision{Action: "rip", Labels: []TitleLabel{
+		{TitleID: 0, Kind: LabelMain, Rip: true},
+		{TitleID: 2, Kind: LabelTrailer, Name: "Theatrical trailer", Rip: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	done := e.waitDone(t)
+	if done.Stage != StageDone || len(done.Warnings) != 0 || importFailed(done) {
+		t.Fatalf("stage=%s warnings=%v outputs=%+v", done.Stage, done.Warnings, done.Outputs)
+	}
+	trailer := filepath.Join(radarrRoot, "The Matrix (1999)", "Trailers", "Theatrical trailer.mkv")
+	if _, err := os.Stat(trailer); err != nil {
+		t.Fatalf("trailer not in the library folder: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(radarrRoot, "The Matrix (1999)", "The Matrix (1999).mkv")); err != nil {
+		t.Fatalf("movie not imported: %v", err)
+	}
+	for _, o := range done.Outputs {
+		if o.Extra != "" && (o.Path != trailer || o.Import != "") {
+			t.Fatalf("extra output %+v", o)
+		}
+	}
+	// Radarr was only ever given the movie.
+	if n := strings.Count(strings.Join(*calls, " "), "POST /api/v3/command"); n != 1 {
+		t.Fatalf("%d import commands", n)
+	}
+	if left, _ := filepath.Glob(filepath.Join(e.out, "_incoming", "_extras", "*")); len(left) != 0 {
+		t.Fatalf("extras staging left: %v", left)
+	}
+}
+
+// Only extras: the disc's film is already in the library.
+func TestRipOnlyExtras(t *testing.T) {
+	e := manualEnv(t, matrixWithPlaylists)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitStage(t, StageLabelling)
+	if err := e.m.SubmitLabels(j.ID, LabelDecision{Action: "rip", Labels: []TitleLabel{
+		{TitleID: 0, Kind: LabelMain},
+		{TitleID: 2, Kind: LabelExtra, Category: "interview", Name: "Keanu", Rip: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	done := e.waitDone(t)
+	want := filepath.Join(e.out, "Movies", "The Matrix (1999)", "Interviews", "Keanu.mkv")
+	if done.Stage != StageDone || len(done.Outputs) != 1 || done.Outputs[0].Path != want {
+		t.Fatalf("stage=%s outputs=%+v err=%s", done.Stage, done.Outputs, done.Error)
+	}
+	if err := e.m.SubmitLabels("nope", LabelDecision{Action: "rip"}); err == nil {
+		t.Fatal("labels for a disc not waiting")
+	}
+}
+
+// The second disc of a release: only its extras are ripped, into the
+// folder of the movie Radarr already has, with no import.
+func TestExtrasOnlyWithRadarr(t *testing.T) {
+	e := manualEnv(t, matrixWithPlaylists)
+	radarrRoot := filepath.Join(e.out, "radarr-movies")
+	srv, calls := fakeRadarr(t, radarrRoot, "/remote/library")
+	defer srv.Close()
+	e.cfg.Arr.Radarr = config.ArrApp{Enabled: true, URL: srv.URL, APIKey: "k", RootFolder: radarrRoot, AddMissing: true, ImportMode: "move",
+		PathMap: map[string]string{e.out: "/remote/library"}}
+	e.m.SetConfig(e.cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitStage(t, StageLabelling)
+	if err := e.m.SubmitLabels(j.ID, LabelDecision{Action: "rip", Labels: []TitleLabel{
+		{TitleID: 0, Kind: LabelMain},
+		{TitleID: 2, Kind: LabelExtra, Name: "The Making of", Rip: true},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	done := e.waitDone(t)
+	want := filepath.Join(radarrRoot, "The Matrix (1999)", "Featurettes", "The Making of.mkv")
+	if done.Stage != StageDone || len(done.Warnings) != 0 || len(done.Outputs) != 1 || done.Outputs[0].Path != want {
+		t.Fatalf("stage=%s warnings=%v outputs=%+v", done.Stage, done.Warnings, done.Outputs)
+	}
+	if strings.Contains(strings.Join(*calls, " "), "POST /api/v3/command") {
+		t.Fatal("an import was sent for extras only")
 	}
 }

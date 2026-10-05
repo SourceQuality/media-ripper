@@ -101,6 +101,8 @@
   // with stills and a live preview read from the disc.
   const KINDS = [['main', 'Main feature'], ['episode', 'Episode'], ['extra', 'Extra'], ['trailer', 'Trailer'], ['skip', 'Skip']];
   const NAME_HINT = { main: 'Cut, e.g. Extended (optional)', episode: 'Episode title (optional)', extra: 'e.g. The Making of…', trailer: 'e.g. Theatrical trailer', skip: '' };
+  // Extras go in the library folder Plex and Jellyfin read for their kind.
+  const CATEGORIES = [['featurette', 'Featurette'], ['behind-the-scenes', 'Behind the scenes'], ['deleted-scene', 'Deleted scene'], ['interview', 'Interview'], ['scene', 'Scene'], ['short', 'Short'], ['other', 'Other']];
   let identity = null; // the disc's identity being edited
   const labelCard = (j, previews) => {
     const id = j.identity || {};
@@ -117,11 +119,12 @@
           ${playable ? (uhd ? '<div class="muted small">4K: stills only</div>' : `<button class="small" data-play="${l.title_id}" data-dur="${Math.round((l.duration || 0) / 1e9)}">▶ Preview</button>`) : ''}</td>
         <td><select data-f="kind">${KINDS.map(([k, n]) => `<option value="${k}"${k === l.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>
           <input data-f="name" type="text" value="${esc(l.name || '')}" placeholder="${esc(NAME_HINT[l.kind] || '')}">
-          <span data-ep${l.kind === 'episode' ? '' : ' hidden'}>S<input data-f="season" type="number" min="1" value="${l.season || identity.season || 1}" class="num2">E<input data-f="episode" type="number" min="1" value="${l.episode || ''}" class="num2"></span></td>
-        <td><label class="check"><input data-f="rip" type="checkbox"${l.rip ? ' checked' : ''}${l.kind === 'main' || l.kind === 'episode' ? '' : ' disabled'}> Rip</label></td></tr>`;
+          <span data-ep${l.kind === 'episode' ? '' : ' hidden'}>S<input data-f="season" type="number" min="1" value="${l.season || identity.season || 1}" class="num2">E<input data-f="episode" type="number" min="1" value="${l.episode || ''}" class="num2"></span>
+          <select data-f="category"${l.kind === 'extra' ? '' : ' hidden'}>${CATEGORIES.map(([k, n]) => `<option value="${k}"${k === (l.category || 'featurette') ? ' selected' : ''}>${n}</option>`).join('')}</select></td>
+        <td><label class="check"><input data-f="rip" type="checkbox"${l.rip ? ' checked' : ''}${l.kind === 'skip' ? ' disabled' : ''}> Rip</label></td></tr>`;
     }).join('');
     return `<div class="card label-card"><h2>Label the titles</h2>
-      <p class="small">The disc waits in the drive. Say what each title is (stills and previews are read from the disc), then choose what to do. Extras and trailers are named for TheDiscDB; ripping them comes later.</p>
+      <p class="small">The disc waits in the drive. Say what each title is (stills and previews are read from the disc), tick what to rip, then choose what to do. Extras and trailers go next to the film or show, in the folders Plex and Jellyfin read (Featurettes, Trailers…).</p>
       <div class="row actions-row identity">
         <select id="id-kind"><option value="movie"${identity.kind === 'movie' ? ' selected' : ''}>Movie</option><option value="tv"${identity.kind === 'tv' ? ' selected' : ''}>TV</option></select>
         <input id="id-title" type="text" value="${esc(identity.title)}" placeholder="Title">
@@ -138,7 +141,7 @@
   const readLabels = view => [...view.querySelectorAll('table.labels tr[data-title]')].map(tr => {
     const f = n => tr.querySelector(`[data-f="${n}"]`);
     const kind = f('kind').value;
-    return { title_id: +tr.dataset.title, kind, name: f('name').value.trim(), season: kind === 'episode' ? +f('season').value : 0,
+    return { title_id: +tr.dataset.title, kind, name: f('name').value.trim(), category: kind === 'extra' ? f('category').value : '', season: kind === 'episode' ? +f('season').value : 0,
       episode: kind === 'episode' ? +f('episode').value : 0, rip: f('rip').checked && !f('rip').disabled };
   });
 
@@ -146,9 +149,9 @@
     view.querySelectorAll('table.labels tr[data-title]').forEach(tr => {
       const kind = tr.querySelector('[data-f="kind"]'), rip = tr.querySelector('[data-f="rip"]');
       kind.onchange = () => {
-        const ripable = kind.value === 'main' || kind.value === 'episode';
-        rip.disabled = !ripable; if (!ripable) rip.checked = false;
+        rip.disabled = kind.value === 'skip'; if (rip.disabled) rip.checked = false;
         tr.querySelector('[data-ep]').hidden = kind.value !== 'episode';
+        tr.querySelector('[data-f="category"]').hidden = kind.value !== 'extra';
         tr.querySelector('[data-f="name"]').placeholder = NAME_HINT[kind.value] || '';
       };
     });

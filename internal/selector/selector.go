@@ -54,6 +54,11 @@ type Pick struct {
 	EpisodeEnd   int            `json:"episode_end,omitempty"` // > Episode for double episodes
 	EpisodeTitle string         `json:"episode_title,omitempty"`
 	Reason       string         `json:"reason"`
+	// Extra is the library folder of a bonus title ("Featurettes",
+	// "Trailers"…, as Plex and Jellyfin name them) and ExtraName what it
+	// is called; empty for the feature and episodes.
+	Extra     string `json:"extra,omitempty"`
+	ExtraName string `json:"extra_name,omitempty"`
 }
 
 // Selection is the outcome for one disc.

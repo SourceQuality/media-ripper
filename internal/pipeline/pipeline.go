@@ -1345,6 +1345,15 @@ func pickName(p selector.Pick) string {
 	return fmt.Sprintf("title %d", p.Title.ID)
 }
 
+// extraLabel is how a bonus title is shown: "Trailer: Teaser".
+func extraLabel(p selector.Pick) string {
+	name := p.ExtraName
+	if name == "" {
+		name = fmt.Sprintf("Title %d", p.Title.ID)
+	}
+	return strings.TrimSuffix(p.Extra, "s") + ": " + name
+}
+
 func (m *Manager) postProcess(ctx context.Context, job *Job, pick selector.Pick, file string) (string, error) {
 	cfg := job.rt.cfg
 	if cfg.PostProcess.Mode == "none" {
@@ -1382,6 +1391,9 @@ func mkvTitle(job *Job, pick selector.Pick) string {
 	if s.Identity == nil || !s.Identity.Identified() {
 		return ""
 	}
+	if pick.Extra != "" {
+		return extraLabel(pick)
+	}
 	if s.Identity.Kind == metadata.KindTV && pick.Episode > 0 {
 		t := fmt.Sprintf("%s S%02dE%02d", s.Identity.Title, pick.Season, pick.Episode)
 		if pick.EpisodeTitle != "" {
@@ -1417,7 +1429,7 @@ func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pic
 		return Output{}, fmt.Errorf("deliver %s: %w", dest, err)
 	}
 	job.logf("delivered %s (%.2f GB)", dest, float64(size)/1e9)
-	out := Output{Path: dest, Size: size, TitleID: pick.Title.ID, Duration: pick.Title.Duration}
+	out := Output{Path: dest, Size: size, TitleID: pick.Title.ID, Duration: pick.Title.Duration, Extra: pick.Extra}
 	job.set(func(j *Job) { j.Outputs = append(j.Outputs, out) })
 	return out, nil
 }
@@ -1575,6 +1587,8 @@ func (m *Manager) event(job *Job, typ string) notify.Event {
 				ev.Items = append(ev.Items, strings.TrimSpace(fmt.Sprintf("S%02dE%02d-E%02d %s", p.Season, p.Episode, p.EpisodeEnd, p.EpisodeTitle)))
 			case p.Episode > 0:
 				ev.Items = append(ev.Items, strings.TrimSpace(fmt.Sprintf("S%02dE%02d %s", p.Season, p.Episode, p.EpisodeTitle)))
+			case p.Extra != "":
+				ev.Items = append(ev.Items, extraLabel(p))
 			default:
 				ev.Items = append(ev.Items, fmt.Sprintf("Title %d (%s)", p.Title.ID, p.Title.Duration.Round(time.Minute)))
 			}
@@ -1677,6 +1691,9 @@ func destPath(cfg *config.Config, rt *runtime, s Job, pick selector.Pick, ext st
 			vars.Season, vars.Episode, vars.EpisodeEnd = pick.Season, pick.Episode, pick.EpisodeEnd
 		}
 	}
+	if pick.Extra != "" && pick.Episode == 0 && s.Identity != nil && s.Identity.Kind == metadata.KindTV {
+		vars.Season, vars.Episode = 1, 1 // only the show's folder is used
+	}
 	rel, err := naming.Render(tmpl, vars)
 	if err != nil {
 		return "", err
@@ -1684,12 +1701,35 @@ func destPath(cfg *config.Config, rt *runtime, s Job, pick selector.Pick, ext st
 	if ext != "" && !strings.EqualFold(filepath.Ext(rel), ext) {
 		rel = strings.TrimSuffix(rel, filepath.Ext(rel)) + ext
 	}
+	if pick.Extra != "" {
+		// Next to the feature, in the folder Plex and Jellyfin read: the
+		// movie's folder, or the show's (the first folder of its path).
+		name := pick.ExtraName
+		if name == "" {
+			name = fmt.Sprintf("Title %d", pick.Title.ID)
+		}
+		item := filepath.Dir(rel)
+		if s.Identity != nil && s.Identity.Kind == metadata.KindTV {
+			item = strings.SplitN(filepath.ToSlash(rel), "/", 2)[0]
+		}
+		rel = filepath.Join(item, pick.Extra, naming.Sanitize(name)+ext)
+		if rt.arrFor(s.Identity) != nil {
+			// Kept apart from what Radarr/Sonarr import (they would take
+			// a bonus video for the feature) and placed after the import.
+			return filepath.Join(cfg.Output.Path, cfg.Arr.StagingSubdir, extrasSubdir, filepath.Base(s.ID), rel), nil
+		}
+		return filepath.Join(cfg.Output.Path, sub, rel), nil
+	}
 	if rt.arrFor(s.Identity) != nil {
 		// Radarr/Sonarr will move it into their own library layout.
 		sub = cfg.Arr.StagingSubdir
 	}
 	return filepath.Join(cfg.Output.Path, sub, rel), nil
 }
+
+// extrasSubdir, under the staging folder, holds extras until Radarr/Sonarr
+// have imported the feature they go with.
+const extrasSubdir = "_extras"
 
 // hashDisc computes the disc's TheDiscDB content hash from its file
 // inventory, read straight from the device's UDF filesystem. It runs after
