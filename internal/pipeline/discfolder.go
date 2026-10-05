@@ -187,9 +187,16 @@ func (m *Manager) contributeOnly(ctx context.Context, d drive.Drive, job *Job, s
 	job.setStage(StageDone, "kept for TheDiscDB")
 }
 
-// ContributeNext makes the drive's next disc "TheDiscDB only" (on), or
-// cancels that. A disc already in an idle drive is taken right away.
-func (m *Manager) ContributeNext(path string, on bool) error {
+// NextDisc sets how the drive's next disc is handled, overriding the
+// configured mode once: "contribute" (TheDiscDB only), "label" (label its
+// titles first) or "" to cancel. A disc already in an idle drive is taken
+// right away.
+func (m *Manager) NextDisc(path, mode string) error {
+	switch mode {
+	case "", "contribute", "label":
+	default:
+		return fmt.Errorf("unknown mode %q", mode)
+	}
 	r, err := m.runner(path)
 	if err != nil {
 		return err
@@ -198,8 +205,8 @@ func (m *Manager) ContributeNext(path string, on bool) error {
 		return errors.New("drive is busy")
 	}
 	r.mu.Lock()
-	r.contribute, r.forced = on, on
-	if on {
+	r.next, r.forced = mode, mode != ""
+	if mode != "" {
 		r.handled = "" // a disc already in is taken now
 	}
 	r.mu.Unlock()

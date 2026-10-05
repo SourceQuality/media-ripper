@@ -6,10 +6,10 @@
   window.act = {
     eject: d => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/eject`),
     rescan: d => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/rescan`),
-    // "TheDiscDB only": the disc in the drive (or the next one) is scanned
-    // and kept for contributing, not ripped.
-    contribute: (d, on) => fetch(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/contribute`, { method: on ? 'POST' : 'DELETE' })
-      .then(r => r.json()).then(j => { if (j.error) alert(j.error); refresh(); }),
+    // How the disc in the drive (or the next one) is handled instead of
+    // the configured mode: "contribute" (TheDiscDB only: scanned and kept,
+    // not ripped), "label" (wait for you to label its titles), "" cancels.
+    next: (d, mode) => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/next`, { mode }),
     cancel: id => post(`/api/jobs/${encodeURIComponent(id)}/cancel`),
     retry: (id, btn) => {
       btn.disabled = true; btn.textContent = 'Importing…';
@@ -113,18 +113,21 @@
       const pct = j.stage === 'ripping' && j.progress >= 0 ? j.overall
         : ['postprocessing', 'delivering'].includes(j.stage) && j.total ? (j.outputs || []).length / j.total * 100 : -1;
       body = `<div class="row"><span class="title">${esc(jobTitle(j))}</span><span class="stage">${esc(stageText(j))}</span><span class="spacer"></span>
-        <a class="btn" href="history.html#${encodeURIComponent(j.id)}">Disc details</a><button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
+        ${j.stage === 'labelling' ? `<a class="btn primary" href="history.html#${encodeURIComponent(j.id)}">Label titles</a>` : `<a class="btn" href="history.html#${encodeURIComponent(j.id)}">Disc details</a>`}<button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
         ${j.verification ? `<div class="sub muted verify">${esc(j.verification)}</div>` : ''}
         <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
-        ${j.contribute ? '<div class="sub muted">TheDiscDB only: kept for contributing, not ripped.</div>' : liveList(j)}`;
+        ${j.contribute ? '<div class="sub muted">TheDiscDB only: kept for contributing, not ripped.</div>'
+          : j.stage === 'labelling' ? '<div class="sub">The disc waits in the drive for you to label its titles.</div>' : liveList(j)}`;
     } else {
       const status = d.status === 'disc-ok' ? (d.ignored ? 'Disc already ripped' : (d.label || 'Disc inserted')) : d.status === 'tray-open' ? 'Tray open' : d.status === 'no-disc' ? 'Empty' : d.status;
       const last = d.job ? `<span class="stage ${esc(d.job.stage)}">${esc(jobTitle(d.job))} · ${esc(d.job.stage)}</span>` : '';
-      const contribute = d.contribute_next
-        ? `<span class="tag">Next disc: TheDiscDB only</span><button onclick="act.contribute('${esc(d.path)}', false)">Cancel</button>`
-        : `<button title="Scan this disc and keep it for TheDiscDB without ripping it" onclick="act.contribute('${esc(d.path)}', true)">${d.status === 'disc-ok' ? 'TheDiscDB only' : 'Next disc: TheDiscDB only'}</button>`;
+      const inDrive = d.status === 'disc-ok', nextName = { contribute: 'TheDiscDB only', label: 'label first' };
+      const choices = d.next_disc
+        ? `<span class="tag">${inDrive ? 'This' : 'Next'} disc: ${esc(nextName[d.next_disc] || d.next_disc)}</span><button onclick="act.next('${esc(d.path)}', '')">Cancel</button>`
+        : `<button title="Scan the disc and keep it for TheDiscDB without ripping it" onclick="act.next('${esc(d.path)}', 'contribute')">${inDrive ? 'TheDiscDB only' : 'Next disc: TheDiscDB only'}</button>`
+          + (mode !== 'manual' ? `<button title="Scan the disc, then wait for you to label its titles before ripping" onclick="act.next('${esc(d.path)}', 'label')">${inDrive ? 'Label first' : 'Next disc: label first'}</button>` : '');
       body = `<div class="row"><span class="title">${esc(status)}</span>${last}<span class="spacer"></span>
-        ${d.status === 'disc-ok' && !d.contribute_next ? `<button onclick="act.rescan('${esc(d.path)}')">Rip</button>` : ''}${contribute}${d.status === 'disc-ok' ? `<button onclick="act.eject('${esc(d.path)}')">Eject</button>` : ''}</div>
+        ${inDrive && !d.next_disc ? `<button onclick="act.rescan('${esc(d.path)}')">${mode === 'manual' ? 'Scan' : 'Rip'}</button>` : ''}${choices}${inDrive ? `<button onclick="act.eject('${esc(d.path)}')">Eject</button>` : ''}</div>
         ${d.last_error ? `<div class="stage failed">${esc(d.last_error)}</div>` : ''}`;
     }
     const head = d.model ? `<span class="model">${esc(d.model)}</span> <span class="drive">${esc(d.path)}</span>` : `<span class="drive">${esc(d.path)}</span>`;
@@ -134,6 +137,7 @@
   const fmtWhen = t => { const d = new Date(t); const today = new Date(); return d.toDateString() === today.toDateString() ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
 
   let models = {};
+  let mode = 'auto'; // what happens when a disc goes in (Settings)
   const driveName = p => models[p] || p;
 
   // Finished jobs come from the saved history so they survive restarts.
@@ -378,6 +382,7 @@
     $('#version').textContent = s.version || '';
     $('#notices').innerHTML = notices(s);
     models = Object.fromEntries(s.drives.filter(d => d.model).map(d => [d.path, d.model]));
+    mode = s.mode || 'auto';
     // Jobs carried on after a restart whose disc was already ejected.
     const finishing = (s.finishing || []).map(j => driveCard({ path: j.drive, model: models[j.drive], job: j })
       .replace('<div class="card">', '<div class="card finishing">').replace(/<button class="danger"[^>]*>Cancel<\/button>/, ''));

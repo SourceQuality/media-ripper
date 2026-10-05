@@ -97,6 +97,100 @@
     return `<div class="card"><h2>Add this disc to TheDiscDB</h2>${parts.join('')}</div>`;
   };
 
+  // Manual mode: the disc waits in the drive while each title is labelled,
+  // with stills and a live preview read from the disc.
+  const KINDS = [['main', 'Main feature'], ['episode', 'Episode'], ['extra', 'Extra'], ['trailer', 'Trailer'], ['skip', 'Skip']];
+  const NAME_HINT = { main: 'Cut, e.g. Extended (optional)', episode: 'Episode title (optional)', extra: 'e.g. The Making of…', trailer: 'e.g. Theatrical trailer', skip: '' };
+  let identity = null; // the disc's identity being edited
+  const labelCard = (j, previews) => {
+    const id = j.identity || {};
+    identity = identity && identity.job === j.id ? identity : { job: j.id, kind: id.kind && id.kind !== 'unknown' ? id.kind : 'movie', title: id.title || '', year: id.year || '', tmdb_id: id.tmdb_id || 0, tvdb_id: id.tvdb_id || 0, season: id.season || 1 };
+    const titles = Object.fromEntries((j.titles || []).map(t => [t.id, t]));
+    const rows = (j.labels || []).map(l => {
+      const t = titles[l.title_id] || {};
+      const playable = previews && /\.mpls$/i.test(t.source || '');
+      const uhd = /2160|3840/.test(t.video || '');
+      return `<tr data-title="${l.title_id}">
+        <td class="thumb">${playable ? `<img loading="lazy" alt="" src="/api/jobs/${encodeURIComponent(j.id)}/titles/${l.title_id}/thumb" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'muted small',textContent:'no still'}))">` : '<span class="muted small">no preview</span>'}</td>
+        <td><strong>Title ${l.title_id}</strong> · ${esc(fmtDur(l.duration))}<div class="muted small">${esc(t.size || '')} · <code>${esc(t.source || '')}</code> ${esc(t.video || '')}</div>
+          ${l.guess ? `<div class="muted small">Guess: ${esc(l.guess)}</div>` : ''}
+          ${playable ? (uhd ? '<div class="muted small">4K: stills only</div>' : `<button class="small" data-play="${l.title_id}" data-dur="${Math.round((l.duration || 0) / 1e9)}">▶ Preview</button>`) : ''}</td>
+        <td><select data-f="kind">${KINDS.map(([k, n]) => `<option value="${k}"${k === l.kind ? ' selected' : ''}>${n}</option>`).join('')}</select>
+          <input data-f="name" type="text" value="${esc(l.name || '')}" placeholder="${esc(NAME_HINT[l.kind] || '')}">
+          <span data-ep${l.kind === 'episode' ? '' : ' hidden'}>S<input data-f="season" type="number" min="1" value="${l.season || identity.season || 1}" class="num2">E<input data-f="episode" type="number" min="1" value="${l.episode || ''}" class="num2"></span></td>
+        <td><label class="check"><input data-f="rip" type="checkbox"${l.rip ? ' checked' : ''}${l.kind === 'main' || l.kind === 'episode' ? '' : ' disabled'}> Rip</label></td></tr>`;
+    }).join('');
+    return `<div class="card label-card"><h2>Label the titles</h2>
+      <p class="small">The disc waits in the drive. Say what each title is (stills and previews are read from the disc), then choose what to do. Extras and trailers are named for TheDiscDB; ripping them comes later.</p>
+      <div class="row actions-row identity">
+        <select id="id-kind"><option value="movie"${identity.kind === 'movie' ? ' selected' : ''}>Movie</option><option value="tv"${identity.kind === 'tv' ? ' selected' : ''}>TV</option></select>
+        <input id="id-title" type="text" value="${esc(identity.title)}" placeholder="Title">
+        <input id="id-year" type="number" value="${esc(identity.year)}" placeholder="Year" class="num4">
+        <span id="id-season-wrap"${identity.kind === 'tv' ? '' : ' hidden'}>Season <input id="id-season" type="number" min="1" value="${identity.season}" class="num2"></span>
+        <button id="id-search">Search</button><span id="id-results"></span></div>
+      ${previews ? '' : '<p class="muted small">Previews need ffmpeg with Blu-ray (libbluray) support on the ripper.</p>'}
+      <div class="table-wrap"><table class="titles labels"><tbody>${rows}</tbody></table></div>
+      <div class="row actions-row"><button class="primary" data-decide="rip">Rip selected</button><button data-decide="contribute">TheDiscDB only</button><button data-decide="eject">Eject</button><span id="label-status" class="small"></span></div>
+      <dialog id="player"><video id="player-video" controls autoplay playsinline></video>
+        <div class="row actions-row"><span id="player-jumps"></span><span class="spacer"></span><button id="player-close">Close</button></div></dialog></div>`;
+  };
+
+  const readLabels = view => [...view.querySelectorAll('table.labels tr[data-title]')].map(tr => {
+    const f = n => tr.querySelector(`[data-f="${n}"]`);
+    const kind = f('kind').value;
+    return { title_id: +tr.dataset.title, kind, name: f('name').value.trim(), season: kind === 'episode' ? +f('season').value : 0,
+      episode: kind === 'episode' ? +f('episode').value : 0, rip: f('rip').checked && !f('rip').disabled };
+  });
+
+  const wireLabels = (view, j) => {
+    view.querySelectorAll('table.labels tr[data-title]').forEach(tr => {
+      const kind = tr.querySelector('[data-f="kind"]'), rip = tr.querySelector('[data-f="rip"]');
+      kind.onchange = () => {
+        const ripable = kind.value === 'main' || kind.value === 'episode';
+        rip.disabled = !ripable; if (!ripable) rip.checked = false;
+        tr.querySelector('[data-ep]').hidden = kind.value !== 'episode';
+        tr.querySelector('[data-f="name"]').placeholder = NAME_HINT[kind.value] || '';
+      };
+    });
+    const keep = () => { identity.kind = $('#id-kind').value; identity.title = $('#id-title').value.trim(); identity.year = +$('#id-year').value || ''; identity.season = +$('#id-season').value || 1; };
+    $('#id-kind').onchange = () => { keep(); $('#id-season-wrap').hidden = identity.kind !== 'tv'; identity.tmdb_id = identity.tvdb_id = 0; };
+    $('#id-title').oninput = () => { keep(); identity.tmdb_id = identity.tvdb_id = 0; };
+    $('#id-year').oninput = $('#id-season').oninput = keep;
+    $('#id-search').onclick = () => {
+      keep();
+      const out = $('#id-results'); out.textContent = 'Searching…';
+      fetch(`/api/lookup?kind=${identity.kind}&q=${encodeURIComponent(identity.title)}`).then(r => r.json()).then(res => {
+        if (res.error) { out.textContent = res.error; return; }
+        out.innerHTML = (res || []).slice(0, 6).map((r, i) => `<button class="small" data-pick="${i}">${esc(r.title)}${r.year ? ' (' + r.year + ')' : ''}</button>`).join('') || 'Nothing found';
+        out.querySelectorAll('button[data-pick]').forEach(b => b.onclick = () => {
+          const r = res[+b.dataset.pick];
+          Object.assign(identity, { title: r.title, year: r.year || '', tmdb_id: r.tmdb_id || 0, tvdb_id: r.tvdb_id || 0 });
+          $('#id-title').value = r.title; $('#id-year').value = r.year || ''; out.textContent = '✓ ' + r.title;
+        });
+      });
+    };
+    // Preview player: converted live from the disc; jumps restart it.
+    const player = $('#player'), video = $('#player-video');
+    const play = (tid, at) => { video.src = `/api/jobs/${encodeURIComponent(j.id)}/titles/${tid}/preview?start=${at}`; };
+    view.querySelectorAll('button[data-play]').forEach(b => b.onclick = () => {
+      const dur = +b.dataset.dur, tid = b.dataset.play;
+      $('#player-jumps').innerHTML = [0, .25, .5, .75].map(f => Math.floor(dur * f)).map(s => `<button class="small" data-at="${s}">${fmtDur(s * 1e9)}</button>`).join('');
+      $('#player-jumps').querySelectorAll('button').forEach(x => x.onclick = () => play(tid, x.dataset.at));
+      play(tid, 0); player.showModal();
+    });
+    $('#player-close').onclick = () => { video.removeAttribute('src'); video.load(); player.close(); };
+    view.querySelectorAll('button[data-decide]').forEach(b => b.onclick = () => {
+      keep();
+      const action = b.dataset.decide, out = $('#label-status');
+      if (action === 'eject' && !confirm('Eject the disc without ripping it?')) return;
+      const body = { action, labels: readLabels(view) };
+      if (identity.title) body.identity = { kind: identity.kind, title: identity.title, year: +identity.year || 0, tmdb_id: identity.tmdb_id, tvdb_id: identity.tvdb_id, season: identity.kind === 'tv' ? identity.season : 0 };
+      out.textContent = 'Sending…';
+      fetch(`/api/jobs/${encodeURIComponent(j.id)}/labels`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        .then(r => r.json()).then(res => { if (res.error) { out.textContent = res.error; return; } out.textContent = 'Done.'; identity = null; renderDetail(j.id); });
+    });
+  };
+
   let refresh;
   const renderDetail = id => {
     clearTimeout(refresh);
@@ -106,6 +200,15 @@
     const loadFolder = () => fetch(`/api/jobs/${encodeURIComponent(id)}/disc-folder`).then(r => r.ok ? r.json() : null).then(f => { folder = f; }).catch(() => {});
     fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => Promise.all([loadFiles(id), loadFolder()]).then(() => j)).then(j => {
       if (j.error) { view.innerHTML = `<div class="card empty">${esc(j.error)}</div>`; return; }
+      if (j.stage === 'labelling') {
+        // Not refreshed while labelling: it would wipe what is being typed.
+        fetch('/api/status').then(r => r.json()).catch(() => ({})).then(s => {
+          view.innerHTML = `<div class="card"><div class="row"><span class="title">${esc(heading(j))}</span><span class="spacer"></span><span class="muted">waiting to be labelled</span></div>
+            ${j.verification ? `<div class="sub muted">${esc(j.verification)}</div>` : ''}</div>${labelCard(j, !!s.previews)}`;
+          wireLabels(view, j);
+        });
+        return;
+      }
       const discdb = j.hash_matched ? 'Matched: this exact disc, by its content hash' : j.content_hash ? 'No disc with this content hash' : '';
       const ids = [['Disc label', j.label], ['Fingerprint', j.fingerprint], ['Content hash', j.content_hash], ['TheDiscDB', discdb], ['Catalogue', j.catalog], ['Backup', j.backup && j.backup.path], ['Drive', j.drive], ['Disc', j.disc_type],
         ['Started', fmtWhen(j.started_at)], ['Took', j.elapsed]].filter(([, v]) => v);

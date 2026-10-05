@@ -288,10 +288,10 @@ func TestContributeOnlyDisc(t *testing.T) {
 		return DriveStatus{}
 	}
 	waitDrive()
-	if err := e.m.ContributeNext("/dev/fake0", true); err != nil {
+	if err := e.m.NextDisc("/dev/fake0", "contribute"); err != nil {
 		t.Fatal(err)
 	}
-	if !waitDrive().ContributeNext {
+	if waitDrive().NextDisc != "contribute" {
 		t.Fatal("drive does not show the next disc as TheDiscDB only")
 	}
 	e.drv.insert("fp-matrix", "THE_MATRIX")
@@ -312,7 +312,7 @@ func TestContributeOnlyDisc(t *testing.T) {
 	if rec, ok := e.m.Record(j.ID); !ok || !rec.Contribute {
 		t.Fatalf("history record: %+v", rec)
 	}
-	if waitDrive().ContributeNext {
+	if waitDrive().NextDisc != "" {
 		t.Fatal("the mode applies to one disc only")
 	}
 
@@ -348,10 +348,10 @@ func TestContributeOnlyRippedDiscAndCancel(t *testing.T) {
 		t.Fatal("first disc not recorded")
 	}
 
-	if err := e.m.ContributeNext("/dev/fake0", true); err != nil {
+	if err := e.m.NextDisc("/dev/fake0", "contribute"); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.m.ContributeNext("/dev/fake0", false); err != nil {
+	if err := e.m.NextDisc("/dev/fake0", ""); err != nil {
 		t.Fatal(err)
 	}
 	e.drv.insert("fp-matrix", "THE_MATRIX")
@@ -360,7 +360,7 @@ func TestContributeOnlyRippedDiscAndCancel(t *testing.T) {
 		t.Fatalf("%d jobs after a cancelled TheDiscDB only", n)
 	}
 
-	if err := e.m.ContributeNext("/dev/fake0", true); err != nil {
+	if err := e.m.NextDisc("/dev/fake0", "contribute"); err != nil {
 		t.Fatal(err)
 	}
 	e.drv.insert("fp-matrix", "THE_MATRIX")

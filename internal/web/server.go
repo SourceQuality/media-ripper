@@ -60,8 +60,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/retry-import", s.retryImport)
 	mux.HandleFunc("POST /api/drives/{drive}/eject", s.eject)
 	mux.HandleFunc("POST /api/drives/{drive}/rescan", s.rescan)
-	mux.HandleFunc("POST /api/drives/{drive}/contribute", s.contributeNext)
-	mux.HandleFunc("DELETE /api/drives/{drive}/contribute", s.contributeNext)
+	mux.HandleFunc("POST /api/drives/{drive}/next", s.nextDisc)
 	mux.HandleFunc("POST /api/series/reset", s.resetSeries)
 	mux.HandleFunc("POST /api/discs/forget", s.forgetDisc)
 	mux.HandleFunc("POST /api/notify/test", s.testNotify)
@@ -81,6 +80,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/jobs/{id}/disc-folder/nas", s.discFolderNAS)
 	mux.HandleFunc("GET /api/jobs/{id}/disc-folder.zip", s.discFolderZip)
 	mux.HandleFunc("GET /api/jobs/{id}/makemkv-log", s.makemkvLog)
+	mux.HandleFunc("POST /api/jobs/{id}/labels", s.submitLabels)
+	mux.HandleFunc("GET /api/jobs/{id}/titles/{title}/thumb", s.titleThumb)
+	mux.HandleFunc("GET /api/jobs/{id}/titles/{title}/preview", s.titlePreview)
 	mux.HandleFunc("POST /api/jobs/{id}/makemkv-log/send", s.makemkvLogSend)
 	mux.HandleFunc("GET /api/jobs/{id}/contribution", s.contribution)
 	mux.HandleFunc("GET /api/auth/status", s.authStatus)
@@ -123,6 +125,8 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"now":       time.Now(),
 		"drives":    snap.Drives,
 		"recent":    snap.Recent,
+		"previews":  s.Manager.PreviewsAvailable() == nil,
+		"mode":      s.Manager.Config().Mode,
 		"finishing": snap.Finishing,
 		"storage":   snap.Storage,
 		"update":    s.Updates.Available(),
@@ -293,10 +297,17 @@ func (s *Server) rescan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// contributeNext makes the drive's next disc (or the one in it) "TheDiscDB
-// only" (POST), or cancels that (DELETE).
-func (s *Server) contributeNext(w http.ResponseWriter, r *http.Request) {
-	if err := s.Manager.ContributeNext(drivePath(r), r.Method == http.MethodPost); err != nil {
+// nextDisc sets how the drive's next disc (or the one in it) is handled:
+// {"mode": "contribute" | "label" | ""}.
+func (s *Server) nextDisc(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.Manager.NextDisc(drivePath(r), in.Mode); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
@@ -479,6 +490,79 @@ func (s *Server) makemkvLog(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+strings.ReplaceAll(name, `"`, "_")+`.txt"`)
 	}
 	_, _ = w.Write(b)
+}
+
+// submitLabels takes a person's labels and decision for a disc waiting
+// in the drive: {"action": "rip"|"contribute"|"eject", "labels": [...],
+// "identity": {...}}.
+func (s *Server) submitLabels(w http.ResponseWriter, r *http.Request) {
+	var dec pipeline.LabelDecision
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&dec); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.Manager.SubmitLabels(r.PathValue("id"), dec); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func titleID(r *http.Request) (int, bool) {
+	n, err := strconv.Atoi(r.PathValue("title"))
+	return n, err == nil
+}
+
+// titleThumb is a still from a title of a disc being labelled.
+func (s *Server) titleThumb(w http.ResponseWriter, r *http.Request) {
+	t, ok := titleID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, errors.New("bad title"))
+		return
+	}
+	b, err := s.Manager.Thumbnail(r.Context(), r.PathValue("id"), t)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	_, _ = w.Write(b)
+}
+
+// titlePreview streams a title of a disc being labelled from ?start=
+// seconds, converted live for the browser.
+func (s *Server) titlePreview(w http.ResponseWriter, r *http.Request) {
+	t, ok := titleID(r)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, errors.New("bad title"))
+		return
+	}
+	start, _ := strconv.Atoi(r.URL.Query().Get("start"))
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "no-store")
+	// The first bytes come once ffmpeg has opened the disc; errors before
+	// that are reported as JSON.
+	pw := &previewWriter{w: w}
+	if err := s.Manager.Preview(r.Context(), r.PathValue("id"), t, time.Duration(max(start, 0))*time.Second, pw); err != nil && !pw.started {
+		w.Header().Set("Content-Type", "application/json")
+		writeErr(w, http.StatusBadRequest, err)
+	}
+}
+
+// previewWriter flushes each chunk so the video starts playing at once.
+type previewWriter struct {
+	w       http.ResponseWriter
+	started bool
+}
+
+func (p *previewWriter) Write(b []byte) (int, error) {
+	p.started = true
+	n, err := p.w.Write(b)
+	if f, ok := p.w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return n, err
 }
 
 // makemkvLogSend posts the kept log to the TheDiscDB address pasted in

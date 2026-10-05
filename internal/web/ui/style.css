@@ -207,3 +207,14 @@ details[open] > summary { margin-bottom: 10px; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 button.small { font-size: 12px; padding: 2px 8px; }
 .ids dd code { overflow-wrap: anywhere; }
+
+/* Labelling a disc's titles. */
+table.labels td { vertical-align: middle; }
+table.labels td.thumb { width: 170px; }
+table.labels td.thumb img { width: 160px; border-radius: 4px; display: block; }
+table.labels input[type=text] { min-width: 12em; }
+input.num2 { width: 4em; } input.num4 { width: 6em; }
+.label-card .identity input[type=text] { min-width: 16em; }
+#player { max-width: min(960px, 96vw); padding: 10px; }
+#player video { width: 100%; background: #000; border-radius: 4px; }
+@media (max-width: 760px) { table.labels td.thumb { width: 100px; } table.labels td.thumb img { width: 96px; } }

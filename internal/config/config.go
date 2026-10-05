@@ -73,7 +73,10 @@ type Config struct {
 	// therefore win over the file on every start.
 	EnvOverrides []string `yaml:"-" json:"-"`
 
-	Drives       []string `yaml:"drives" json:"drives"`
+	Drives []string `yaml:"drives" json:"drives"`
+	// Mode is what happens when a disc goes in: auto rips it; manual scans
+	// it and waits for a person to label its titles (with previews).
+	Mode         string   `yaml:"mode" json:"mode"`
 	PollInterval Duration `yaml:"poll_interval" json:"poll_interval"`
 	Workspace    string   `yaml:"workspace" json:"workspace"`
 
@@ -297,6 +300,7 @@ type Log struct {
 // Default returns the built-in defaults. Only output.path is mandatory.
 func Default() Config {
 	return Config{
+		Mode:         "auto",
 		PollInterval: Duration(3 * time.Second),
 		Workspace:    "/var/lib/media-ripper",
 		Output: Output{
@@ -593,6 +597,11 @@ func (c *Config) Validate() error {
 	}
 	if c.PostProcess.Mode == "custom" && len(c.PostProcess.CustomCommand) == 0 {
 		errs = append(errs, errors.New("postprocess.custom_command is required when mode is custom"))
+	}
+	switch c.Mode {
+	case "", "auto", "manual":
+	default:
+		errs = append(errs, fmt.Errorf("mode %q must be auto or manual", c.Mode))
 	}
 	switch c.Metadata.TheDiscDB.DiscFolder {
 	case "", "unmatched", "always", "off":
