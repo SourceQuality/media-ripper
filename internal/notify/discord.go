@@ -264,6 +264,9 @@ func discordEmbed(ev Event) map[string]any {
 			e["title"], e["color"] = "⚠️ Done with warnings: "+name, colorAmber
 		}
 		e["description"] = strings.TrimSpace(ev.Match + fmt.Sprintf("\n**%d file(s) delivered in %s.**", len(ev.Outputs), ev.Elapsed))
+		if len(ev.Outputs) == 0 && ev.Summary != "" { // kept for TheDiscDB only
+			e["description"] = strings.TrimSpace(ev.Match + "\n**" + ev.Summary + "**")
+		}
 		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 		field("Warnings", strings.Join(ev.Warnings, "\n"), false)
 	case "review":

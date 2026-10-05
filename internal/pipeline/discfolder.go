@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sourcequality/media-ripper/internal/drive"
+	"github.com/sourcequality/media-ripper/internal/selector"
 	"github.com/sourcequality/media-ripper/internal/store"
 	"github.com/sourcequality/media-ripper/internal/udf"
 )
@@ -158,6 +160,50 @@ func (m *Manager) keepFolder(ctx context.Context, job *Job, device string) {
 		return
 	}
 	job.logf("kept the MakeMKV log for TheDiscDB (%s)", time.Since(start).Round(time.Second))
+}
+
+// contributeOnly finishes a "TheDiscDB only" disc after its scan: the
+// disc's folder and MakeMKV log are kept, nothing is ripped, and the
+// deferred finish ejects it. A disc with nothing worth ripping is still
+// worth contributing.
+func (m *Manager) contributeOnly(ctx context.Context, d drive.Drive, job *Job, scanErr error) {
+	if scanErr != nil && !errors.Is(scanErr, selector.ErrNothingToRip) {
+		m.fail(job, scanErr)
+		return
+	}
+	job.setStage(StageScanning, "keeping the disc for TheDiscDB (not ripping)")
+	n, err := m.readFolder(ctx, job.ID, d.Path())
+	if err != nil {
+		m.fail(job, fmt.Errorf("TheDiscDB folder: %w", err))
+		return
+	}
+	job.logf("kept the disc's folder for TheDiscDB (%d small files)", n)
+	job.set(func(j *Job) { j.Message = "keeping the MakeMKV log for TheDiscDB" })
+	if err := m.keepScanLog(ctx, job.ID, d.Path()); err != nil {
+		m.fail(job, fmt.Errorf("MakeMKV log: %w", err))
+		return
+	}
+	job.logf("kept the MakeMKV log for TheDiscDB; not ripped")
+	job.setStage(StageDone, "kept for TheDiscDB")
+}
+
+// ContributeNext makes the drive's next disc "TheDiscDB only" (on), or
+// cancels that. A disc already in an idle drive is taken right away.
+func (m *Manager) ContributeNext(path string, on bool) error {
+	r, err := m.runner(path)
+	if err != nil {
+		return err
+	}
+	if j := r.current(); j != nil && !j.Snapshot().Stage.Terminal() {
+		return errors.New("drive is busy")
+	}
+	r.mu.Lock()
+	r.contribute, r.forced = on, on
+	if on {
+		r.handled = "" // a disc already in is taken now
+	}
+	r.mu.Unlock()
+	return nil
 }
 
 // logFile is a job's MakeMKV scan log for TheDiscDB.

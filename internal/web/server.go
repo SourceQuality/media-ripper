@@ -60,6 +60,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/retry-import", s.retryImport)
 	mux.HandleFunc("POST /api/drives/{drive}/eject", s.eject)
 	mux.HandleFunc("POST /api/drives/{drive}/rescan", s.rescan)
+	mux.HandleFunc("POST /api/drives/{drive}/contribute", s.contributeNext)
+	mux.HandleFunc("DELETE /api/drives/{drive}/contribute", s.contributeNext)
 	mux.HandleFunc("POST /api/series/reset", s.resetSeries)
 	mux.HandleFunc("POST /api/discs/forget", s.forgetDisc)
 	mux.HandleFunc("POST /api/notify/test", s.testNotify)
@@ -285,6 +287,16 @@ func (s *Server) eject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) rescan(w http.ResponseWriter, r *http.Request) {
 	if err := s.Manager.Rescan(drivePath(r)); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// contributeNext makes the drive's next disc (or the one in it) "TheDiscDB
+// only" (POST), or cancels that (DELETE).
+func (s *Server) contributeNext(w http.ResponseWriter, r *http.Request) {
+	if err := s.Manager.ContributeNext(drivePath(r), r.Method == http.MethodPost); err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}

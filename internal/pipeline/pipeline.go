@@ -321,6 +321,8 @@ type DriveStatus struct {
 	Job       *Job   `json:"job,omitempty"`
 	LastError string `json:"last_error,omitempty"`
 	Ignored   bool   `json:"ignored,omitempty"` // disc present but already handled
+	// ContributeNext: the next disc is only kept for TheDiscDB, not ripped.
+	ContributeNext bool `json:"contribute_next,omitempty"`
 }
 
 // Snapshot is the whole system state for the UI.
@@ -453,6 +455,9 @@ type runner struct {
 	lastState drive.Status
 	lastLabel string
 	ignored   bool
+	// contribute makes the next disc "TheDiscDB only": scanned and kept
+	// for contributing, not ripped.
+	contribute bool
 	// drv is read live while a job runs: the loop does not poll then, and
 	// the job ejects part-way through.
 	drv   drive.Drive
@@ -475,7 +480,7 @@ func (r *runner) force() {
 func (r *runner) status() DriveStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := DriveStatus{Path: r.path, Model: r.model, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored}
+	s := DriveStatus{Path: r.path, Model: r.model, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored, ContributeNext: r.contribute}
 	// The job first, then the tray: a job marks itself ejected only after
 	// the eject, so the two never disagree.
 	if r.job != nil {
@@ -537,7 +542,7 @@ func (r *runner) loop(ctx context.Context) {
 			r.mu.Unlock()
 			continue
 		}
-		handled, forced := r.handled, r.forced
+		handled, forced, contribute := r.handled, r.forced, r.contribute
 		r.mu.Unlock()
 
 		fp, label, err := d.Fingerprint()
@@ -568,7 +573,7 @@ func (r *runner) loop(ctx context.Context) {
 		r.ignored = false
 		r.mu.Unlock()
 
-		if !forced && !cfg.Eject.ReripSameDisc {
+		if !forced && !contribute && !cfg.Eject.ReripSameDisc {
 			if rec, ok := r.m.deps.Store.Disc(fp); ok {
 				r.log.Info("disc already ripped; ejecting", "label", label, "ripped_at", rec.RippedAt.Format(time.RFC3339))
 				rt.notifier.Send(ctx, notify.Event{Type: "skipped", Drive: r.path, Label: label, Title: rec.Title, Error: "already ripped"})
@@ -587,8 +592,10 @@ func (r *runner) loop(ctx context.Context) {
 		job := newJob(r.path, rt)
 		job.Fingerprint = fp
 		job.Label = label
+		job.Contribute = contribute
 		r.mu.Lock()
 		r.job = job
+		r.contribute = false // once, for this disc
 		r.mu.Unlock()
 		r.m.remember(job)
 		if r.m.runJob(ctx, d, job) {
@@ -641,6 +648,10 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	defer d.Lock(false)
 
 	disc, sel, err := m.scanIdentifySelect(ctx, job)
+	if job.Snapshot().Contribute {
+		m.contributeOnly(ctx, d, job, err)
+		return
+	}
 	if err != nil {
 		if errors.Is(err, selector.ErrNothingToRip) {
 			job.setStage(StageSkipped, "nothing to rip")
@@ -895,8 +906,15 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		return snap.Ejected
 	}
 
-	switch snap.Stage {
-	case StageDone, StageReview:
+	switch {
+	case snap.Contribute && snap.Stage == StageDone:
+		_ = os.RemoveAll(workDir)
+		m.saveInventory(job)
+		log.Info("kept for TheDiscDB; not ripped", "title", displayTitle(job))
+		ev := m.event(job, "done")
+		ev.Items, ev.Summary, ev.Elapsed = nil, "Kept for TheDiscDB; not ripped", snap.Elapsed
+		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
+	case snap.Stage == StageDone || snap.Stage == StageReview:
 		var outs []string
 		for _, o := range snap.Outputs {
 			outs = append(outs, o.Path)
@@ -922,7 +940,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			ev.Items, ev.Summary = lines, summary
 		}
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
-	case StageFailed, StageCancelled:
+	case snap.Stage == StageFailed || snap.Stage == StageCancelled:
 		if !cfg.Output.KeepWorkspaceOnError && !cfg.Output.Resume {
 			_ = os.RemoveAll(workDir)
 		}
@@ -933,7 +951,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			ev.Items, ev.Summary = lines, summary
 		}
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
-	case StageSkipped:
+	case snap.Stage == StageSkipped:
 		_ = os.RemoveAll(workDir)
 		log.Info("skipped", "label", snap.Label)
 		ev := m.event(job, "skipped")
@@ -971,6 +989,7 @@ type historyEntry struct {
 	Label        string              `json:"label"`
 	Fingerprint  string              `json:"fingerprint,omitempty"`
 	DiscType     string              `json:"disc_type,omitempty"`
+	Contribute   bool                `json:"contribute,omitempty"`
 	Title        string              `json:"title"`
 	Kind         string              `json:"kind"`
 	Stage        Stage               `json:"stage"`
@@ -992,7 +1011,7 @@ type historyEntry struct {
 }
 
 func historyRecord(s Job) historyEntry {
-	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Fingerprint: s.Fingerprint, DiscType: s.DiscType, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
+	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Fingerprint: s.Fingerprint, DiscType: s.DiscType, Contribute: s.Contribute, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
 		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles,
 		Catalog: s.Catalog, Matched: s.CatalogMatched, Compared: s.CatalogCompared, Hash: s.ContentHash, HashOK: s.HashMatched,
 		Verification: s.Verification, Warnings: s.Warnings}
