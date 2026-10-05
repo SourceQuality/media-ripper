@@ -261,3 +261,22 @@ func TestLiveMessagesPersist(t *testing.T) {
 		t.Fatalf("finished job still remembered: %s", data)
 	}
 }
+
+// A disc held for labelling: its "label" message is the one the rip then
+// keeps up to date.
+func TestLabelMessageBecomesTheLiveOne(t *testing.T) {
+	var reqs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs = append(reqs, r.Method)
+		_, _ = w.Write([]byte(`{"id":"m1"}`))
+	}))
+	defer srv.Close()
+	n := &Notifier{Discord: &Discord{BotToken: "tok", ChannelID: "c", apiBase: srv.URL}}
+	ctx := context.Background()
+	n.Send(ctx, Event{Type: "label", JobID: "j", Title: "The Thing (1982)"})
+	n.Send(ctx, Event{Type: "started", JobID: "j", Title: "The Thing (1982)"})
+	n.Send(ctx, Event{Type: "done", JobID: "j", Title: "The Thing (1982)"})
+	if strings.Join(reqs, ",") != "POST,PATCH,PATCH" {
+		t.Fatalf("requests = %v", reqs)
+	}
+}

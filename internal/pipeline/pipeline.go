@@ -49,6 +49,8 @@ type Deps struct {
 	// DiscFiles lists a disc's files and sizes from its UDF filesystem
 	// (tests replace the reader).
 	DiscFiles func(device string) ([]udf.File, error)
+	// FFmpeg is the ffmpeg binary for previews (tests use a fake).
+	FFmpeg string
 	// HTTPClient sends to TheDiscDB (tests point it at a fake).
 	HTTPClient *http.Client
 	// ReadDisc lists a disc's files and reads the contents of those want
@@ -101,6 +103,12 @@ type Manager struct {
 	folderReading map[string]bool
 	// running counts Run calls still winding down.
 	running sync.WaitGroup
+	// labelWait are the discs waiting for a person's labels.
+	labelWait map[string]chan LabelDecision
+	// discRead serialises preview reads of the disc; previews cancels
+	// those running when labelling ends.
+	discRead sync.Mutex
+	previews map[*context.CancelFunc]bool
 }
 
 // New builds a manager. Drives are opened lazily by Run.
@@ -321,8 +329,9 @@ type DriveStatus struct {
 	Job       *Job   `json:"job,omitempty"`
 	LastError string `json:"last_error,omitempty"`
 	Ignored   bool   `json:"ignored,omitempty"` // disc present but already handled
-	// ContributeNext: the next disc is only kept for TheDiscDB, not ripped.
-	ContributeNext bool `json:"contribute_next,omitempty"`
+	// NextDisc is how the next disc is handled instead of the configured
+	// mode: "contribute" (TheDiscDB only) or "label".
+	NextDisc string `json:"next_disc,omitempty"`
 }
 
 // Snapshot is the whole system state for the UI.
@@ -455,9 +464,10 @@ type runner struct {
 	lastState drive.Status
 	lastLabel string
 	ignored   bool
-	// contribute makes the next disc "TheDiscDB only": scanned and kept
-	// for contributing, not ripped.
-	contribute bool
+	// next is how the next disc is handled instead of the configured mode:
+	// "contribute" (TheDiscDB only: scanned and kept, not ripped) or
+	// "label" (held for a person to label its titles first).
+	next string
 	// drv is read live while a job runs: the loop does not poll then, and
 	// the job ejects part-way through.
 	drv   drive.Drive
@@ -480,7 +490,7 @@ func (r *runner) force() {
 func (r *runner) status() DriveStatus {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	s := DriveStatus{Path: r.path, Model: r.model, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored, ContributeNext: r.contribute}
+	s := DriveStatus{Path: r.path, Model: r.model, Status: r.lastState.String(), LastError: r.lastErr, Label: r.lastLabel, Ignored: r.ignored, NextDisc: r.next}
 	// The job first, then the tray: a job marks itself ejected only after
 	// the eject, so the two never disagree.
 	if r.job != nil {
@@ -542,8 +552,9 @@ func (r *runner) loop(ctx context.Context) {
 			r.mu.Unlock()
 			continue
 		}
-		handled, forced, contribute := r.handled, r.forced, r.contribute
+		handled, forced, next := r.handled, r.forced, r.next
 		r.mu.Unlock()
+		contribute := next == "contribute"
 
 		fp, label, err := d.Fingerprint()
 		if err != nil {
@@ -593,9 +604,10 @@ func (r *runner) loop(ctx context.Context) {
 		job.Fingerprint = fp
 		job.Label = label
 		job.Contribute = contribute
+		job.Manual = !contribute && (next == "label" || cfg.Mode == "manual")
 		r.mu.Lock()
 		r.job = job
-		r.contribute = false // once, for this disc
+		r.next = "" // once, for this disc
 		r.mu.Unlock()
 		r.m.remember(job)
 		if r.m.runJob(ctx, d, job) {
@@ -651,6 +663,36 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	if job.Snapshot().Contribute {
 		m.contributeOnly(ctx, d, job, err)
 		return
+	}
+	if job.Snapshot().Manual {
+		if err != nil && !errors.Is(err, selector.ErrNothingToRip) {
+			m.fail(job, err)
+			return
+		}
+		dec, ok := m.waitForLabels(ctx, d, job, disc, sel)
+		if !ok {
+			job.setStage(StageCancelled, "cancelled")
+			return
+		}
+		switch dec.Action {
+		case "contribute":
+			job.set(func(j *Job) { j.Contribute, j.Labels = true, dec.Labels })
+			m.contributeOnly(ctx, d, job, nil)
+			return
+		case "eject":
+			why := dec.reason
+			if why == "" {
+				why = "ejected without ripping"
+			}
+			job.set(func(j *Job) { j.Labels = dec.Labels })
+			job.setStage(StageSkipped, why)
+			return
+		}
+		if sel, err = m.applyLabels(job, disc, dec); err != nil {
+			m.fail(job, err)
+			return
+		}
+		_ = d.Lock(true)
 	}
 	if err != nil {
 		if errors.Is(err, selector.ErrNothingToRip) {
@@ -901,6 +943,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	log := m.log.With("drive", job.Drive, "job", job.ID)
 	workDir := workDir(cfg, job)
 
+	_ = os.RemoveAll(filepath.Join(cfg.StateDir(), "previews", filepath.Base(job.ID)))
 	if m.pausedByShutdown(snap) {
 		m.pauseForRestart(ctx, d, job)
 		return snap.Ejected
@@ -990,6 +1033,7 @@ type historyEntry struct {
 	Fingerprint  string              `json:"fingerprint,omitempty"`
 	DiscType     string              `json:"disc_type,omitempty"`
 	Contribute   bool                `json:"contribute,omitempty"`
+	Labels       []TitleLabel        `json:"labels,omitempty"`
 	Title        string              `json:"title"`
 	Kind         string              `json:"kind"`
 	Stage        Stage               `json:"stage"`
@@ -1011,7 +1055,7 @@ type historyEntry struct {
 }
 
 func historyRecord(s Job) historyEntry {
-	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Fingerprint: s.Fingerprint, DiscType: s.DiscType, Contribute: s.Contribute, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
+	h := historyEntry{ID: s.ID, Drive: s.Drive, Label: s.Label, Fingerprint: s.Fingerprint, DiscType: s.DiscType, Contribute: s.Contribute, Labels: s.Labels, Title: displayTitleSnap(s), Stage: s.Stage, Error: s.Error, Outputs: s.Outputs,
 		StartedAt: s.StartedAt, FinishedAt: s.FinishedAt, Elapsed: s.Elapsed, Identity: s.Identity, Selection: s.Selection, Titles: s.Titles,
 		Catalog: s.Catalog, Matched: s.CatalogMatched, Compared: s.CatalogCompared, Hash: s.ContentHash, HashOK: s.HashMatched,
 		Verification: s.Verification, Warnings: s.Warnings}

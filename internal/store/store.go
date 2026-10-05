@@ -61,8 +61,11 @@ type DiscMatch struct {
 	Disc   int    `json:"disc,omitempty"`
 	// Episodes maps MakeMKV title ids to the episode each holds; titles
 	// not listed were left out.
-	Episodes    map[int]int `json:"episodes,omitempty"`
-	ConfirmedAt time.Time   `json:"confirmed_at"`
+	Episodes map[int]int `json:"episodes,omitempty"`
+	// Labels is what a person labelled every title of the disc (extras,
+	// trailers, cuts), kept as given.
+	Labels      json.RawMessage `json:"labels,omitempty"`
+	ConfirmedAt time.Time       `json:"confirmed_at"`
 }
 
 // SeriesProgress remembers where the next disc of a season starts.

@@ -152,6 +152,21 @@ func (m *Manager) ContributionText(id string) (string, error) {
 			}
 		}
 	}
+	// A person's labels name every title, extras and trailers included.
+	for _, l := range j.Labels {
+		switch l.Kind {
+		case LabelMain:
+			picks[l.TitleID] = strings.TrimSpace("Main movie " + l.Name)
+		case LabelEpisode:
+			picks[l.TitleID] = strings.TrimSpace(fmt.Sprintf("Episode S%02dE%02d %s", l.Season, l.Episode, l.Name))
+		case LabelExtra:
+			picks[l.TitleID] = "Extra: " + l.Name
+		case LabelTrailer:
+			picks[l.TitleID] = "Trailer: " + l.Name
+		case LabelSkip:
+			picks[l.TitleID] = "nothing worth keeping"
+		}
+	}
 	for _, t := range j.Titles {
 		what := picks[t.ID]
 		if what == "" {

@@ -27,6 +27,9 @@ const (
 	StageFailed      Stage = "failed"
 	StageSkipped     Stage = "skipped"
 	StageCancelled   Stage = "cancelled"
+	// StageLabelling: scanned, the disc held in the drive while a person
+	// labels its titles (mode manual).
+	StageLabelling Stage = "labelling"
 	// StageReview: delivered to staging, waiting for a person to confirm
 	// the titles before Radarr/Sonarr import them. The drive is free.
 	StageReview Stage = "review"
@@ -82,6 +85,11 @@ type Job struct {
 	// Contribute marks a disc only scanned and kept for TheDiscDB, not
 	// ripped (the drive's "TheDiscDB only" button).
 	Contribute bool `json:"contribute,omitempty"`
+	// Manual: the disc waits for a person to label its titles first.
+	Manual bool `json:"manual,omitempty"`
+	// Labels is what each title of the disc is, as a person labelled it
+	// (or, while labelling, the guesses offered).
+	Labels []TitleLabel `json:"labels,omitempty"`
 
 	Identity  *metadata.Identity  `json:"identity,omitempty"`
 	Selection *selector.Selection `json:"selection,omitempty"`
@@ -277,7 +285,7 @@ func (j *Job) Snapshot() Job {
 	c := Job{
 		ID: j.ID, Drive: j.Drive, Fingerprint: j.Fingerprint, Label: j.Label, DiscType: j.DiscType,
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
-		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun, Contribute: j.Contribute,
+		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun, Contribute: j.Contribute, Manual: j.Manual,
 		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog, CatalogDisc: j.CatalogDisc, Backup: j.Backup,
 		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared, ContentHash: j.ContentHash, HashMatched: j.HashMatched,
 	}
@@ -288,6 +296,7 @@ func (j *Job) Snapshot() Job {
 		c.Elapsed = time.Since(j.StartedAt).Round(time.Second).String()
 	}
 	c.Titles = append([]TitleSummary(nil), j.Titles...)
+	c.Labels = append([]TitleLabel(nil), j.Labels...)
 	c.Outputs = append([]Output(nil), j.Outputs...)
 	c.Log = append([]LogLine(nil), j.Log...)
 	c.mu = nil

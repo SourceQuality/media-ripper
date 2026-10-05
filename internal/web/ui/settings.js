@@ -6,6 +6,7 @@
   const SCHEMA = [
     { title: 'Drives', fields: [
       { key: 'drives', label: 'Drives', type: 'lines', hint: 'empty = all /dev/sr*' },
+      { key: 'mode', label: 'When a disc goes in', type: 'select', options: ['auto', 'manual'], hint: 'auto: rip it. manual: scan it, then wait for you to label its titles (with previews) before ripping' },
       { key: 'poll_interval', label: 'Poll interval', type: 'duration' },
       { key: 'workspace', label: 'Workspace', type: 'text' },
     ]},
@@ -167,7 +168,7 @@
   // What most people set; everything else is behind "Show advanced
   // settings". A section with no basic field only appears in advanced.
   const BASIC = new Set([
-    'drives', 'output.path', 'output.backup', 'makemkv.key',
+    'drives', 'mode', 'output.path', 'output.backup', 'makemkv.key',
     'metadata.tmdb_api_key', 'metadata.thediscdb.enabled',
     'arr.radarr.enabled', 'arr.radarr.url', 'arr.radarr.api_key', 'arr.radarr.root_folder',
     'arr.sonarr.enabled', 'arr.sonarr.url', 'arr.sonarr.api_key', 'arr.sonarr.root_folder',

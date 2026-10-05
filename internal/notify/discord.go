@@ -97,7 +97,9 @@ func (d *Discord) send(ctx context.Context, client *http.Client, ev Event) error
 		}
 	}
 	id, err := d.request(ctx, client, http.MethodPost, "", payload)
-	if err == nil && ev.Type == "started" && ev.JobID != "" && id != "" {
+	// A disc's first message is kept up to date from then on: "started",
+	// or "label" when it waits to be labelled first.
+	if err == nil && (ev.Type == "started" || ev.Type == "label") && ev.JobID != "" && id != "" {
 		d.live(ev.JobID, id, false)
 	}
 	return err
@@ -253,6 +255,10 @@ func discordEmbed(ev Event) map[string]any {
 	case "ready":
 		e["title"], e["color"] = "Ready for the next disc", colorGreen
 		e["description"] = fmt.Sprintf("**%s** is ripped and the tray is open. Copying and import carry on in the background.", name)
+	case "label":
+		e["title"], e["color"] = "✋ Label the titles: "+name, colorAmber
+		e["description"] = strings.TrimSpace(ev.Match + "\nThe disc waits in the drive: open media-ripper to label its titles (with previews), then rip it, keep it for TheDiscDB, or eject it.")
+		field(itemsHeading(ev.Items), strings.Join(ev.Items, "\n"), false)
 	case "interrupted":
 		e["title"], e["color"] = "Paused: "+name, colorGrey
 		e["description"] = strings.TrimSpace(ev.Match + "\n**" + ev.Summary + "**")

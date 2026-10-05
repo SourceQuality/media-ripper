@@ -9,6 +9,12 @@
 drives: []
 #  - /dev/sr0
 
+# What happens when a disc goes in. auto: it is ripped straight away.
+# manual: it is scanned, then waits in the drive for you to label its
+# titles in the web UI (with previews), and you choose to rip it, keep it
+# for TheDiscDB only, or eject it. The drive card can switch one disc.
+mode: auto
+
 # How often each drive is checked for a disc.
 poll_interval: 3s
 
