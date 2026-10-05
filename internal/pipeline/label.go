@@ -38,8 +38,8 @@ type TitleLabel struct {
 	// deleted-scene, interview, scene, short or other.
 	Category string `json:"category,omitempty"`
 	Season   int    `json:"season,omitempty"`
-	Episode  int           `json:"episode,omitempty"`
-	Rip      bool          `json:"rip"`
+	Episode  int    `json:"episode,omitempty"`
+	Rip      bool   `json:"rip"`
 	// Guess says where an offered label came from; empty once a person
 	// has labelled the title.
 	Guess string `json:"guess,omitempty"`
