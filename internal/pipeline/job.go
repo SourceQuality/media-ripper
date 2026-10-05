@@ -79,6 +79,9 @@ type Job struct {
 	FinishedAt  time.Time `json:"finished_at,omitempty"`
 	Elapsed     string    `json:"elapsed,omitempty"`
 	DryRun      bool      `json:"dry_run,omitempty"`
+	// Contribute marks a disc only scanned and kept for TheDiscDB, not
+	// ripped (the drive's "TheDiscDB only" button).
+	Contribute bool `json:"contribute,omitempty"`
 
 	Identity  *metadata.Identity  `json:"identity,omitempty"`
 	Selection *selector.Selection `json:"selection,omitempty"`
@@ -274,7 +277,7 @@ func (j *Job) Snapshot() Job {
 	c := Job{
 		ID: j.ID, Drive: j.Drive, Fingerprint: j.Fingerprint, Label: j.Label, DiscType: j.DiscType,
 		Stage: j.Stage, Message: j.Message, Progress: j.Progress, Overall: j.Overall, ETA: j.ETA,
-		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun,
+		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun, Contribute: j.Contribute,
 		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog, CatalogDisc: j.CatalogDisc, Backup: j.Backup,
 		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared, ContentHash: j.ContentHash, HashMatched: j.HashMatched,
 	}

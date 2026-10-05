@@ -266,3 +266,119 @@ func TestSendScanLog(t *testing.T) {
 		t.Fatalf("no log: %v", err)
 	}
 }
+
+// "TheDiscDB only": the disc is scanned and kept for contributing, not
+// ripped, not recorded as ripped, and ejected; the next disc rips as usual.
+func TestContributeOnlyDisc(t *testing.T) {
+	e := matrixEnv(t)
+	fakeDisc(e)
+	ripLog := filepath.Join(t.TempDir(), "rips")
+	t.Setenv("FAKE_LOG", ripLog)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	waitDrive := func() DriveStatus {
+		for i := 0; i < 200; i++ {
+			if d := e.m.Snapshot().Drives; len(d) == 1 {
+				return d[0]
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatal("no drive")
+		return DriveStatus{}
+	}
+	waitDrive()
+	if err := e.m.ContributeNext("/dev/fake0", true); err != nil {
+		t.Fatal(err)
+	}
+	if !waitDrive().ContributeNext {
+		t.Fatal("drive does not show the next disc as TheDiscDB only")
+	}
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitDone(t)
+	e.waitEject(t, 1)
+	if !j.Contribute || j.Stage != StageDone || len(j.Outputs) != 0 {
+		t.Fatalf("job: contribute=%v stage=%s outputs=%v err=%s", j.Contribute, j.Stage, j.Outputs, j.Error)
+	}
+	if data, _ := os.ReadFile(ripLog); len(data) != 0 {
+		t.Fatalf("ripped titles %q", data)
+	}
+	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Kept || !st.Log {
+		t.Fatalf("kept for TheDiscDB: %+v", st)
+	}
+	if _, ripped := e.st.Disc("fp-matrix"); ripped {
+		t.Fatal("recorded as ripped")
+	}
+	if rec, ok := e.m.Record(j.ID); !ok || !rec.Contribute {
+		t.Fatalf("history record: %+v", rec)
+	}
+	if waitDrive().ContributeNext {
+		t.Fatal("the mode applies to one disc only")
+	}
+
+	// The same disc put back in is ripped normally.
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	e.waitEject(t, 2)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if data, _ := os.ReadFile(ripLog); len(data) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the disc was not ripped the second time")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A disc already ripped can be kept for TheDiscDB; the mode can be
+// cancelled before a disc goes in.
+func TestContributeOnlyRippedDiscAndCancel(t *testing.T) {
+	e := matrixEnv(t)
+	e.cfg.Metadata.TheDiscDB.DiscFolder = "off"
+	e.m.SetConfig(e.cfg)
+	fakeDisc(e)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	first := e.waitDone(t)
+	e.waitEject(t, 1)
+	if _, ripped := e.st.Disc("fp-matrix"); !ripped {
+		t.Fatal("first disc not recorded")
+	}
+
+	if err := e.m.ContributeNext("/dev/fake0", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.m.ContributeNext("/dev/fake0", false); err != nil {
+		t.Fatal(err)
+	}
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	e.waitEject(t, 2) // already ripped: skipped and ejected, not kept
+	if n := len(e.m.Snapshot().Recent); n != 1 {
+		t.Fatalf("%d jobs after a cancelled TheDiscDB only", n)
+	}
+
+	if err := e.m.ContributeNext("/dev/fake0", true); err != nil {
+		t.Fatal(err)
+	}
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	e.waitEject(t, 3)
+	deadline := time.Now().Add(5 * time.Second)
+	var j Job
+	for time.Now().Before(deadline) {
+		if r := e.m.Snapshot().Recent; len(r) == 2 && r[0].Stage.Terminal() {
+			j = r[0]
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if j.ID == "" || j.ID == first.ID || !j.Contribute || j.Stage != StageDone {
+		t.Fatalf("contribute job on a ripped disc: %+v", j)
+	}
+	e.waitFinalized(t, j.ID)
+	if st, _ := e.m.DiscFolderStatus(j.ID); !st.Kept || !st.Log {
+		t.Fatalf("kept: %+v", st)
+	}
+}

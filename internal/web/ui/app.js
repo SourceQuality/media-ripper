@@ -6,6 +6,10 @@
   window.act = {
     eject: d => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/eject`),
     rescan: d => post(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/rescan`),
+    // "TheDiscDB only": the disc in the drive (or the next one) is scanned
+    // and kept for contributing, not ripped.
+    contribute: (d, on) => fetch(`/api/drives/${encodeURIComponent(d.replace('/dev/', ''))}/contribute`, { method: on ? 'POST' : 'DELETE' })
+      .then(r => r.json()).then(j => { if (j.error) alert(j.error); refresh(); }),
     cancel: id => post(`/api/jobs/${encodeURIComponent(id)}/cancel`),
     retry: (id, btn) => {
       btn.disabled = true; btn.textContent = 'Importing…';
@@ -112,12 +116,15 @@
         <a class="btn" href="history.html#${encodeURIComponent(j.id)}">Disc details</a><button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
         ${j.verification ? `<div class="sub muted verify">${esc(j.verification)}</div>` : ''}
         <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
-        ${liveList(j)}`;
+        ${j.contribute ? '<div class="sub muted">TheDiscDB only: kept for contributing, not ripped.</div>' : liveList(j)}`;
     } else {
       const status = d.status === 'disc-ok' ? (d.ignored ? 'Disc already ripped' : (d.label || 'Disc inserted')) : d.status === 'tray-open' ? 'Tray open' : d.status === 'no-disc' ? 'Empty' : d.status;
       const last = d.job ? `<span class="stage ${esc(d.job.stage)}">${esc(jobTitle(d.job))} · ${esc(d.job.stage)}</span>` : '';
+      const contribute = d.contribute_next
+        ? `<span class="tag">Next disc: TheDiscDB only</span><button onclick="act.contribute('${esc(d.path)}', false)">Cancel</button>`
+        : `<button title="Scan this disc and keep it for TheDiscDB without ripping it" onclick="act.contribute('${esc(d.path)}', true)">${d.status === 'disc-ok' ? 'TheDiscDB only' : 'Next disc: TheDiscDB only'}</button>`;
       body = `<div class="row"><span class="title">${esc(status)}</span>${last}<span class="spacer"></span>
-        ${d.status === 'disc-ok' ? `<button onclick="act.rescan('${esc(d.path)}')">Rip</button><button onclick="act.eject('${esc(d.path)}')">Eject</button>` : ''}</div>
+        ${d.status === 'disc-ok' && !d.contribute_next ? `<button onclick="act.rescan('${esc(d.path)}')">Rip</button>` : ''}${contribute}${d.status === 'disc-ok' ? `<button onclick="act.eject('${esc(d.path)}')">Eject</button>` : ''}</div>
         ${d.last_error ? `<div class="stage failed">${esc(d.last_error)}</div>` : ''}`;
     }
     const head = d.model ? `<span class="model">${esc(d.model)}</span> <span class="drive">${esc(d.path)}</span>` : `<span class="drive">${esc(d.path)}</span>`;
@@ -198,6 +205,7 @@
     const total = ((j.selection && j.selection.picks) || []).length;
     const done = (j.outputs || []).length;
     const unit = j.identity && j.identity.kind === 'tv' ? 'episode' : 'title';
+    if (j.contribute && j.stage === 'done') return 'Kept for TheDiscDB; not ripped';
     switch (j.stage) {
       case 'cancelled': return `Cancelled after ${fmtElapsed(j.elapsed)}${total ? ` · ${done} of ${plural(total, unit)} delivered` : ''}`;
       case 'failed': return `Failed${j.error ? ': ' + j.error : ''}${total ? ` · ${done} of ${plural(total, unit)} delivered` : ''}`;
@@ -212,7 +220,7 @@
   const historyCard = j => {
     const warnings = (j.warnings || []).map(w => `<div class="warning">${esc(w)}</div>`).join('');
     const outcome = outcomeLine(j);
-    const lines = pickLines(j);
+    const lines = j.contribute ? '' : pickLines(j);
     const skipped = skippedLine(j);
     return `<div class="card history ${esc(j.stage)}">
       <div class="row"><span class="badge ${esc(j.stage)}" title="${esc(j.stage)}">${icon[j.stage] || '•'}</span>
