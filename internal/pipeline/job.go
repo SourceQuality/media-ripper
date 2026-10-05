@@ -56,6 +56,9 @@ type Output struct {
 	Size     int64         `json:"size"`
 	TitleID  int           `json:"title_id"`
 	Duration time.Duration `json:"duration"`
+	// Extra is the library folder of a bonus title; extras are not handed
+	// to Radarr/Sonarr but placed next to what they imported.
+	Extra string `json:"extra,omitempty"`
 	// RippedAs is the file name MakeMKV wrote ("title_t06.mkv").
 	RippedAs string `json:"ripped_as,omitempty"`
 	// Import is what Radarr/Sonarr did with the file: "imported", or

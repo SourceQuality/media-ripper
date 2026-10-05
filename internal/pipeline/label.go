@@ -34,9 +34,12 @@ type TitleLabel struct {
 	Duration time.Duration `json:"duration"`
 	Kind     string        `json:"kind"`
 	Name     string        `json:"name,omitempty"`
-	Season   int           `json:"season,omitempty"`
-	Episode  int           `json:"episode,omitempty"`
-	Rip      bool          `json:"rip"`
+	// Category of an extra: featurette (default), behind-the-scenes,
+	// deleted-scene, interview, scene, short or other.
+	Category string `json:"category,omitempty"`
+	Season   int    `json:"season,omitempty"`
+	Episode  int    `json:"episode,omitempty"`
+	Rip      bool   `json:"rip"`
 	// Guess says where an offered label came from; empty once a person
 	// has labelled the title.
 	Guess string `json:"guess,omitempty"`
@@ -49,6 +52,23 @@ type LabelDecision struct {
 	// Identity corrects what the disc is; nil keeps the identification.
 	Identity *ReviewEdit `json:"identity,omitempty"`
 	reason   string
+}
+
+// extraFolders are the library folders Plex and Jellyfin read extras from.
+var extraFolders = map[string]string{
+	"featurette": "Featurettes", "behind-the-scenes": "Behind The Scenes", "deleted-scene": "Deleted Scenes",
+	"interview": "Interviews", "scene": "Scenes", "short": "Shorts", "other": "Other",
+}
+
+// extraFolder is where a ripped extra or trailer goes.
+func extraFolder(l TitleLabel) string {
+	if l.Kind == LabelTrailer {
+		return "Trailers"
+	}
+	if f, ok := extraFolders[l.Category]; ok {
+		return f
+	}
+	return "Featurettes"
 }
 
 // trailerMax is the longest a title is offered as a trailer.
@@ -192,7 +212,13 @@ func checkLabels(s Job, dec *LabelDecision) error {
 			return fmt.Errorf("title %d is not on this disc", l.TitleID)
 		}
 		switch l.Kind {
-		case LabelMain, LabelExtra, LabelTrailer, LabelSkip:
+		case LabelMain, LabelTrailer:
+		case LabelSkip:
+			l.Rip = false
+		case LabelExtra:
+			if _, ok := extraFolders[l.Category]; l.Category != "" && !ok {
+				return fmt.Errorf("title %d: unknown extra category %q", l.TitleID, l.Category)
+			}
 		case LabelEpisode:
 			if l.Rip && (l.Season <= 0 || l.Episode <= 0) {
 				return fmt.Errorf("title %d needs a season and episode number", l.TitleID)
@@ -201,11 +227,6 @@ func checkLabels(s Job, dec *LabelDecision) error {
 			return fmt.Errorf("title %d: unknown kind %q", l.TitleID, l.Kind)
 		}
 		l.Name, l.Guess = strings.TrimSpace(l.Name), ""
-		// Extras and trailers are named for TheDiscDB; ripping them comes
-		// with their own library folders, later.
-		if l.Kind != LabelMain && l.Kind != LabelEpisode {
-			l.Rip = false
-		}
 		if l.Rip {
 			ripping++
 		}
@@ -235,6 +256,7 @@ func (m *Manager) applyLabels(job *Job, disc *makemkv.Disc, dec LabelDecision) (
 	base := selector.Selection{Kind: edit.Kind}
 	edit.Episodes = map[int]int{}
 	next := 0
+	var extras []selector.Pick
 	for _, l := range dec.Labels {
 		t := byID[l.TitleID]
 		if t == nil {
@@ -248,6 +270,10 @@ func (m *Manager) applyLabels(job *Job, disc *makemkv.Disc, dec LabelDecision) (
 			base.Skipped = append(base.Skipped, selector.Skipped{TitleID: t.ID, Duration: t.Duration, Reason: why})
 			continue
 		}
+		if l.Kind == LabelExtra || l.Kind == LabelTrailer {
+			extras = append(extras, selector.Pick{Title: t, Reason: "labelled by a person", Extra: extraFolder(l), ExtraName: l.Name})
+			continue
+		}
 		base.Picks = append(base.Picks, selector.Pick{Title: t, Reason: "labelled by a person"})
 		edit.Episodes[t.ID] = l.Episode
 		if l.Kind == LabelEpisode {
@@ -257,7 +283,7 @@ func (m *Manager) applyLabels(job *Job, disc *makemkv.Disc, dec LabelDecision) (
 			next = max(next, l.Episode+1)
 		}
 	}
-	if len(base.Picks) == 0 {
+	if len(base.Picks) == 0 && len(extras) == 0 {
 		return nil, errors.New("no title to rip")
 	}
 	if edit.Kind == "" {
@@ -266,9 +292,20 @@ func (m *Manager) applyLabels(job *Job, disc *makemkv.Disc, dec LabelDecision) (
 			edit.Kind = metadata.KindTV
 		}
 	}
-	job.set(func(j *Job) { j.Selection = &base })
-	if err := applyEdit(job, edit); err != nil {
-		return nil, err
+	if len(base.Picks) > 0 {
+		job.set(func(j *Job) { j.Selection = &base })
+		if err := applyEdit(job, edit); err != nil {
+			return nil, err
+		}
+	} else { // only extras: the disc's identity, as given
+		if strings.TrimSpace(edit.Title) == "" {
+			return nil, errors.New("say what the disc is before ripping its extras")
+		}
+		id := metadata.Identity{Kind: edit.Kind, Title: edit.Title, Year: edit.Year, TMDBID: edit.TMDBID, TVDBID: edit.TVDBID, Season: edit.Season, Confidence: 1, Source: sourceManual}
+		if s.Identity != nil {
+			id.Disc, id.Hint = s.Identity.Disc, s.Identity.Hint
+		}
+		job.set(func(j *Job) { j.Identity, j.Selection = &id, &base })
 	}
 	job.set(func(j *Job) {
 		j.Labels = dec.Labels
@@ -276,6 +313,8 @@ func (m *Manager) applyLabels(job *Job, disc *makemkv.Disc, dec LabelDecision) (
 			j.Selection.NextEpisode = next
 		}
 		sort.SliceStable(j.Selection.Picks, func(a, b int) bool { return j.Selection.Picks[a].Episode < j.Selection.Picks[b].Episode })
+		// The feature and episodes first; extras after them.
+		j.Selection.Picks = append(j.Selection.Picks, extras...)
 	})
 	s = job.Snapshot()
 	if err := m.deps.Store.SetDiscMatch(s.Fingerprint, matchOf(s)); err != nil {

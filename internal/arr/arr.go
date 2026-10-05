@@ -341,6 +341,23 @@ func (c *Client) RemotePath(local string) string {
 	return to + rest
 }
 
+// LocalPath turns a path as the app sees it back into this machine's
+// view, undoing the path map (the longest mapped prefix wins).
+func (c *Client) LocalPath(remote string) string {
+	norm := strings.ReplaceAll(remote, "\\", "/")
+	best, bestTo := "", ""
+	for from, to := range c.Cfg.PathMap {
+		t := strings.TrimRight(strings.ReplaceAll(to, "\\", "/"), "/")
+		if t != "" && (norm == t || strings.HasPrefix(norm, t+"/")) && len(t) > len(bestTo) {
+			best, bestTo = strings.TrimRight(from, "/"), t
+		}
+	}
+	if bestTo == "" {
+		return remote
+	}
+	return best + strings.TrimPrefix(norm, bestTo)
+}
+
 // ImportOptions tunes Import.
 type ImportOptions struct {
 	// Wait bounds how long the import command may run.

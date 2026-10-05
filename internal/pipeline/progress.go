@@ -62,7 +62,9 @@ func progressLines(s Job) ([]string, string) {
 	for i, p := range s.Selection.Picks {
 		item := pickName(p)
 		label := "Title " + fmt.Sprint(p.Title.ID)
-		if p.Episode > 0 {
+		if p.Extra != "" {
+			label = extraLabel(p)
+		} else if p.Episode > 0 {
 			label = strings.TrimSpace(fmt.Sprintf("%s %s", item, p.EpisodeTitle))
 		} else if s.Identity != nil && s.Identity.Title != "" {
 			label = "Main movie"

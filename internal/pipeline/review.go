@@ -277,7 +277,9 @@ func matchOf(s Job) store.DiscMatch {
 	id := s.Identity
 	m := store.DiscMatch{Kind: string(id.Kind), Title: id.Title, Year: id.Year, TMDBID: id.TMDBID, TVDBID: id.TVDBID, Season: id.Season, Disc: id.Disc, Episodes: map[int]int{}}
 	for _, p := range s.Selection.Picks {
-		m.Episodes[p.Title.ID] = p.Episode
+		if p.Extra == "" {
+			m.Episodes[p.Title.ID] = p.Episode
+		}
 	}
 	if len(s.Labels) > 0 {
 		m.Labels, _ = json.Marshal(s.Labels)
