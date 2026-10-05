@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -28,6 +29,26 @@ var (
 // previewEnv points libbluray at MakeMKV's libmmbd for decryption.
 func previewEnv() []string {
 	return append(os.Environ(), "LIBAACS_PATH=libmmbd", "LIBBDPLUS_PATH=libmmbd")
+}
+
+// discReader runs ffmpeg reading the disc. libmmbd starts a helper
+// (makemkvcon guiserver) that inherits ffmpeg's output and outlives it, so
+// the whole process group is killed when the read ends or is cancelled,
+// and its pipes are not waited on past a few seconds.
+func (m *Manager) discReader(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, m.ffmpeg(), args...)
+	cmd.Env = previewEnv()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
+// endGroup kills what is left of a finished read's process group.
+func endGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 }
 
 func (m *Manager) ffmpeg() string {
@@ -116,15 +137,29 @@ func (m *Manager) Thumbnail(ctx context.Context, id string, titleID int) ([]byte
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	// Keyframes only: a frame decoded without its reference is grey.
-	cmd := exec.CommandContext(ctx, m.ffmpeg(), "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey",
+	// Output to files, not pipes: libmmbd's helper keeps whatever ffmpeg
+	// had open, and nothing should wait on it.
+	tmp, err := os.MkdirTemp("", "mr-thumb-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	jpg, logf := filepath.Join(tmp, "t.jpg"), filepath.Join(tmp, "log")
+	errFile, err := os.Create(logf)
+	if err != nil {
+		return nil, err
+	}
+	cmd := m.discReader(ctx, "-hide_banner", "-loglevel", "error", "-skip_frame", "nokey",
 		"-playlist", strconv.Itoa(pl), "-ss", strconv.FormatFloat(at.Seconds(), 'f', 0, 64), "-i", "bluray:"+job.Drive,
-		"-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2", "-c:v", "mjpeg", "pipe:1")
-	cmd.Env = previewEnv()
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	out, err := cmd.Output()
-	if err != nil || len(out) == 0 {
-		return nil, fmt.Errorf("ffmpeg: %v %s", err, lastLine(errb.String()))
+		"-frames:v", "1", "-vf", "scale=480:-2", "-f", "image2", "-c:v", "mjpeg", "-y", jpg)
+	cmd.Stderr = errFile
+	err = cmd.Run()
+	errFile.Close()
+	endGroup(cmd)
+	out, rerr := os.ReadFile(jpg)
+	if err != nil || rerr != nil || len(out) == 0 {
+		log, _ := os.ReadFile(logf)
+		return nil, fmt.Errorf("ffmpeg: %v %s", err, lastLine(string(log)))
 	}
 	p := m.thumbFile(id, titleID)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err == nil {
@@ -205,18 +240,40 @@ func (m *Manager) Preview(ctx context.Context, id string, titleID int, start tim
 	if job.Snapshot().Stage != StageLabelling {
 		return errors.New("the disc is no longer waiting to be labelled")
 	}
-	cmd := exec.CommandContext(ctx, m.ffmpeg(), "-hide_banner", "-loglevel", "error",
+	cmd := m.discReader(ctx, "-hide_banner", "-loglevel", "error",
 		"-playlist", strconv.Itoa(pl), "-ss", strconv.FormatFloat(start.Seconds(), 'f', 0, 64), "-i", "bluray:"+job.Drive,
 		"-t", "600", "-map", "0:v:0", "-map", "0:a:0?", "-vf", "scale=-2:540",
 		"-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-g", "48",
 		"-c:a", "aac", "-b:a", "128k", "-ac", "2",
 		"-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1")
-	cmd.Env = previewEnv()
-	cmd.Stdout = w
-	var errb bytes.Buffer
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil && ctx.Err() == nil {
-		return fmt.Errorf("ffmpeg: %v %s", err, lastLine(errb.String()))
+	// A pipe of our own: when ffmpeg exits its group is killed, which
+	// closes the helper's copy too, and the stream ends.
+	pr, pw, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer pr.Close()
+	errFile, err := os.CreateTemp("", "mr-preview-")
+	if err != nil {
+		pw.Close()
+		return err
+	}
+	defer os.Remove(errFile.Name())
+	defer errFile.Close()
+	cmd.Stdout, cmd.Stderr = pw, errFile
+	if err := cmd.Start(); err != nil {
+		pw.Close()
+		return err
+	}
+	pw.Close()
+	copied := make(chan error, 1)
+	go func() { _, err := io.Copy(w, pr); copied <- err }()
+	err = cmd.Wait()
+	endGroup(cmd)
+	<-copied
+	if err != nil && ctx.Err() == nil {
+		log, _ := os.ReadFile(errFile.Name())
+		return fmt.Errorf("ffmpeg: %v %s", err, lastLine(string(log)))
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,8 +26,10 @@ TINFO:2,16,0,"00005.mpls"
 const fakeBlurayFFmpeg = `#!/bin/sh
 [ -n "$FAKE_FFMPEG_LOG" ] && echo "$* $LIBAACS_PATH" >> "$FAKE_FFMPEG_LOG"
 case "$*" in *mp4*) [ -n "$FAKE_FFMPEG_SLOW" ] && exec sleep "$FAKE_FFMPEG_SLOW" ;; esac
+# libmmbd's helper: started by ffmpeg, keeps its output open, outlives it.
+[ -n "$FAKE_FFMPEG_HELPER" ] && sleep 317 &
 case "$*" in
-  *mjpeg*) printf 'JPEGDATA' ;;
+  *mjpeg*) for last; do :; done; printf 'JPEGDATA' > "$last" ;;
   *) printf 'MP4DATA' ;;
 esac
 `
@@ -352,5 +355,46 @@ func TestExtrasOnlyWithRadarr(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(*calls, " "), "POST /api/v3/command") {
 		t.Fatal("an import was sent for extras only")
+	}
+}
+
+// libmmbd's helper inherits ffmpeg's output and outlives it: reads must
+// still finish, and the helper must not keep the disc busy (seen on The
+// Thing: the decision then waited forever before ripping).
+func TestLingeringHelperDoesNotHangReads(t *testing.T) {
+	e := manualEnv(t, matrixWithPlaylists)
+	t.Setenv("FAKE_FFMPEG_HELPER", "1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go e.m.Run(ctx)
+	e.drv.insert("fp-matrix", "THE_MATRIX")
+	j := e.waitStage(t, StageLabelling)
+	start := time.Now()
+	img, err := e.m.Thumbnail(ctx, j.ID, 0)
+	if err != nil || string(img) != "JPEGDATA" || time.Since(start) > 3*time.Second {
+		t.Fatalf("thumbnail %q %v after %s", img, err, time.Since(start))
+	}
+	start = time.Now()
+	var vid bytes.Buffer
+	if err := e.m.Preview(ctx, j.ID, 0, 0, &vid); err != nil || vid.String() != "MP4DATA" || time.Since(start) > 3*time.Second {
+		t.Fatalf("preview %q %v after %s", vid.String(), err, time.Since(start))
+	}
+	if err := e.m.SubmitLabels(j.ID, LabelDecision{Action: "rip", Labels: []TitleLabel{{TitleID: 0, Kind: LabelMain, Rip: true}}}); err != nil {
+		t.Fatal(err)
+	}
+	if d := e.waitDone(t); d.Stage != StageDone {
+		t.Fatalf("rip after a lingering helper: %s %s", d.Stage, d.Error)
+	}
+	// Every helper is killed with its ffmpeg's process group.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out, _ := exec.Command("pgrep", "-x", "-f", "sleep 317").Output()
+		if len(strings.TrimSpace(string(out))) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("helpers still running: %s", out)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
