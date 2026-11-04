@@ -125,10 +125,9 @@ func (m *Manager) finishEjected(ctx context.Context) {
 // finishOffline delivers the titles a paused job had ripped but not yet
 // delivered, imports them and records the job, as if it had never stopped.
 func (m *Manager) finishOffline(ctx context.Context, snap Job, dir string) {
-	rt := m.rt.Load()
 	job := new(Job)
 	*job = snap
-	job.mu, job.rt = &sync.Mutex{}, rt
+	job.mu, job.rt = &sync.Mutex{}, m.rt.Load()
 	job.set(func(j *Job) {
 		j.Outputs, j.Activities, j.Error = nil, nil, ""
 		j.Stage = StageDelivering
@@ -142,13 +141,20 @@ func (m *Manager) finishOffline(ctx context.Context, snap Job, dir string) {
 		return
 	}
 	m.setFinishing(job, true)
-	defer m.setFinishing(job, false)
 	m.remember(job)
+	m.completeOffline(ctx, job, rs, snap, "carrying on after a restart; the disc was already ejected")
+}
+
+// completeOffline delivers what a job ripped but did not deliver, imports
+// it and records the job. The caller has marked the job as finishing.
+func (m *Manager) completeOffline(ctx context.Context, job *Job, rs *resume, snap Job, why string) {
+	rt := m.rt.Load()
+	defer m.setFinishing(job, false)
 	if err := rs.begin(job.ID, job.StartedAt); err != nil {
 		m.log.Warn("resume state", "job", job.ID, "err", err)
 	}
-	m.log.Info("finishing a paused job; the disc was already ejected", "job", job.ID, "title", displayTitle(job))
-	job.logf("carrying on after a restart; the disc was already ejected")
+	m.log.Info("finishing a job without its disc", "job", job.ID, "title", displayTitle(job), "why", why)
+	job.logf("%s", why)
 	stop := make(chan struct{})
 	go m.liveProgress(ctx, job, stop)
 	defer func() {

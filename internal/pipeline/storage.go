@@ -134,6 +134,18 @@ func (m *Manager) setStorage(next StorageStatus) {
 	prev := st.status
 	st.status = next
 	st.mu.Unlock()
+	if next.OK() && !prev.OK() {
+		m.mu.Lock()
+		ctx := m.runCtx
+		m.mu.Unlock()
+		if ctx != nil {
+			m.running.Add(1)
+			go func() {
+				defer m.running.Done()
+				m.retryFailedDeliveries(ctx)
+			}()
+		}
+	}
 	if prev.State == "" {
 		if !next.OK() {
 			m.log.Warn("library storage", "path", next.Path, "state", next.State, "err", next.Error)

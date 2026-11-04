@@ -372,6 +372,11 @@ func (m *Manager) DiscordAction(ctx context.Context, customID string) string {
 			return "Import still failing: " + strings.Join(j.Warnings, "; ")
 		}
 		return "✅ Imported"
+	case "redeliver":
+		if _, err := m.RetryDelivery(arg); err != nil {
+			return "Could not deliver: " + err.Error()
+		}
+		return "📦 Delivering from the kept rip; a message follows when it finishes"
 	case "discard":
 		if err := m.DiscardReview(arg); err != nil {
 			return "Could not discard: " + err.Error()

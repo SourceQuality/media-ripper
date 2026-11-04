@@ -15,6 +15,10 @@
       btn.disabled = true; btn.textContent = 'Importing…';
       post(`/api/jobs/${encodeURIComponent(id)}/retry-import`).finally(() => { btn.disabled = false; btn.textContent = 'Retry import'; });
     },
+    redeliver: (id, btn) => {
+      btn.disabled = true; btn.textContent = 'Delivering…';
+      post(`/api/jobs/${encodeURIComponent(id)}/retry-delivery`);
+    },
     detail: id => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => {
       $('#detail-title').textContent = jobTitle(j);
       $('#detail-log').textContent = (j.log || []).length
@@ -236,7 +240,7 @@
       ${skipped ? `<div class="sub muted">${esc(skipped)}</div>` : ''}
       ${j.backup ? `<div class="sub muted">Full-disc backup: ${esc(j.backup.path)} (${esc(fmtBytes(j.backup.size))})</div>` : ''}
       ${warnings}
-      <div class="row end">${importFailed(j) ? `<button class="primary" onclick="act.retry('${esc(j.id)}', this)">Retry import</button>` : ''}<button onclick="act.detail('${esc(j.id)}')">Details</button></div>
+      <div class="row end">${j.retry_delivery ? `<button class="primary" onclick="act.redeliver('${esc(j.id)}', this)">Retry delivery</button>` : ''}${importFailed(j) ? `<button class="primary" onclick="act.retry('${esc(j.id)}', this)">Retry import</button>` : ''}<button onclick="act.detail('${esc(j.id)}')">Details</button></div>
     </div>`;
   };
 
@@ -387,7 +391,7 @@
     const finishing = (s.finishing || []).map(j => driveCard({ path: j.drive, model: models[j.drive], job: j })
       .replace('<div class="card">', '<div class="card finishing">').replace(/<button class="danger"[^>]*>Cancel<\/button>/, ''));
     $('#drives').innerHTML = (s.drives.length ? s.drives.map(driveCard).join('') : '<div class="card empty">No optical drives</div>') +
-      (finishing.length ? `<h3 class="muted small">Finishing after a restart (disc already out)</h3>${finishing.join('')}` : '');
+      (finishing.length ? `<h3 class="muted small">Finishing without the disc</h3>${finishing.join('')}` : '');
     const busy = s.drives.filter(d => d.job && !terminal(d.job.stage)).length + finishing.length;
     setCount('drives', busy ? busy + ' ripping' : '', busy > 0);
     renderRecent();

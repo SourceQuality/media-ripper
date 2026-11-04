@@ -122,6 +122,13 @@ Radarr sees (and back). If an import fails or is cut short by a restart,
 the files stay in `_incoming/`, the job offers **Retry import**, and an
 interrupted import runs again at the next start.
 
+If copying a finished rip fails (the share was unreachable, say), the rip is
+kept in the workspace and the disc is not needed again. The job runs again
+by itself as soon as the library storage answers, or offers **Retry
+delivery** in the web UI and on Discord. Only titles that were never ripped
+need the disc. A kept rip is removed at the first start after
+`output.resume_max_age`; a notice goes out a day before.
+
 **Extras** (manual mode) are not Radarr's or Sonarr's to import: they are
 kept in `_incoming/_extras/` until the movie or show is imported, then
 moved into its library folder, in the subfolders Plex and Jellyfin read

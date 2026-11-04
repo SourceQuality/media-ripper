@@ -22,11 +22,14 @@ import (
 
 // Interaction is a button press.
 type Interaction struct {
-	ID       string // interaction id, for the reply
-	Token    string // interaction token, for the reply and follow-up edits
-	CustomID string // what the button does, e.g. "mr:approve:<job>"
-	UserID   string
-	UserName string
+	// ChannelID and MessageID locate the pressed message; an action that
+	// outlives the interaction token (15 minutes) reports through them.
+	ChannelID, MessageID string
+	ID                   string // interaction id, for the reply
+	Token                string // interaction token, for the reply and follow-up edits
+	CustomID             string // what the button does, e.g. "mr:approve:<job>"
+	UserID               string
+	UserName             string
 }
 
 // Handler acts on a press and returns the text to put on the message.
@@ -205,7 +208,11 @@ func (b *Bot) dispatch(ctx context.Context, f frame) {
 			Member *struct {
 				User user `json:"user"`
 			} `json:"member"`
-			User *user `json:"user"`
+			User      *user  `json:"user"`
+			ChannelID string `json:"channel_id"`
+			Message   struct {
+				ID string `json:"id"`
+			} `json:"message"`
 			Data struct {
 				CustomID string `json:"custom_id"`
 			} `json:"data"`
@@ -213,7 +220,7 @@ func (b *Bot) dispatch(ctx context.Context, f frame) {
 		if json.Unmarshal(f.D, &d) != nil || d.Type != 3 || !strings.HasPrefix(d.Data.CustomID, "mr:") {
 			return
 		}
-		in := Interaction{ID: d.ID, Token: d.Token, CustomID: d.Data.CustomID}
+		in := Interaction{ID: d.ID, Token: d.Token, CustomID: d.Data.CustomID, ChannelID: d.ChannelID, MessageID: d.Message.ID}
 		if d.Member != nil {
 			in.UserID, in.UserName = d.Member.User.ID, d.Member.User.Username
 		} else if d.User != nil {
@@ -228,32 +235,41 @@ type user struct {
 	Username string `json:"username"`
 }
 
-// answer acknowledges within Discord's 3 seconds, runs the action, then
-// rewrites the message: the result replaces the buttons.
+// answer shows the press right away, runs the action, then reports its
+// result on the message. Taking the buttons off in the acknowledgement means
+// a slow action never looks ignored and cannot be started twice.
 func (b *Bot) answer(ctx context.Context, in Interaction) {
 	if len(b.Allowed) > 0 && !contains(b.Allowed, in.UserID) {
 		_ = b.post(ctx, fmt.Sprintf("/interactions/%s/%s/callback", in.ID, in.Token),
 			map[string]any{"type": 4, "data": map[string]any{"content": "You are not allowed to do that here.", "flags": 64}})
 		return
 	}
-	// 6: deferred update; the message keeps showing until edited.
-	if err := b.post(ctx, fmt.Sprintf("/interactions/%s/%s/callback", in.ID, in.Token), map[string]any{"type": 6}); err != nil {
-		b.log().Warn("discord: acknowledge", "err", err)
-		return
-	}
-	result := b.Handle(ctx, in)
 	who := in.UserName
 	if who == "" {
 		who = "someone"
 	}
+	none := map[string]any{"parse": []string{}}
+	// 7: update the pressed message as the response.
+	working := map[string]any{"type": 7, "data": map[string]any{"content": fmt.Sprintf("⏳ Working on it — %s", who), "components": []any{}, "allowed_mentions": none}}
+	if err := b.post(ctx, fmt.Sprintf("/interactions/%s/%s/callback", in.ID, in.Token), working); err != nil {
+		b.log().Warn("discord: acknowledge", "err", err)
+		return
+	}
+	result := b.Handle(ctx, in)
 	b.mu.Lock()
 	app := b.AppID
 	if app == "" {
 		app = b.appID
 	}
 	b.mu.Unlock()
-	edit := map[string]any{"content": fmt.Sprintf("%s — %s", result, who), "components": []any{}, "allowed_mentions": map[string]any{"parse": []string{}}}
-	if err := b.request(ctx, http.MethodPatch, fmt.Sprintf("/webhooks/%s/%s/messages/@original", app, in.Token), edit); err != nil {
+	edit := map[string]any{"content": fmt.Sprintf("%s — %s", result, who), "components": []any{}, "allowed_mentions": none}
+	err := b.request(ctx, http.MethodPatch, fmt.Sprintf("/webhooks/%s/%s/messages/@original", app, in.Token), edit)
+	if err != nil && in.ChannelID != "" && in.MessageID != "" {
+		// The interaction token lasts 15 minutes; the bot's own message
+		// can still be edited after that.
+		err = b.request(ctx, http.MethodPatch, fmt.Sprintf("/channels/%s/messages/%s", in.ChannelID, in.MessageID), edit)
+	}
+	if err != nil {
 		b.log().Warn("discord: update message", "err", err)
 	}
 }

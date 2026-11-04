@@ -25,7 +25,7 @@ type Notifier struct {
 
 // Event is what gets sent.
 type Event struct {
-	Type  string `json:"type"` // started | label | ready | done | failed | skipped | review | storage | test
+	Type  string `json:"type"` // started | label | ready | done | failed | skipped | review | storage | expiring | test
 	JobID string `json:"job_id,omitempty"`
 	Drive string `json:"drive"`
 	// DriveName is the drive model, e.g. "HL-DT-ST BD-RE BU40N".
@@ -40,14 +40,17 @@ type Event struct {
 	Final bool `json:"final,omitempty"`
 	// ImportFailed marks a finished disc with files Radarr/Sonarr did not
 	// import: its message offers a retry.
-	ImportFailed bool      `json:"import_failed,omitempty"`
-	Warnings     []string  `json:"warnings,omitempty"`
-	Label        string    `json:"label,omitempty"`
-	Title        string    `json:"title,omitempty"`
-	Outputs      []string  `json:"outputs,omitempty"`
-	Error        string    `json:"error,omitempty"`
-	Elapsed      string    `json:"elapsed,omitempty"`
-	Time         time.Time `json:"time"`
+	ImportFailed bool `json:"import_failed,omitempty"`
+	// RetryDelivery marks a job whose rip is kept and can be delivered
+	// without the disc: its message offers that.
+	RetryDelivery bool      `json:"retry_delivery,omitempty"`
+	Warnings      []string  `json:"warnings,omitempty"`
+	Label         string    `json:"label,omitempty"`
+	Title         string    `json:"title,omitempty"`
+	Outputs       []string  `json:"outputs,omitempty"`
+	Error         string    `json:"error,omitempty"`
+	Elapsed       string    `json:"elapsed,omitempty"`
+	Time          time.Time `json:"time"`
 }
 
 // Send delivers the event; failures are logged, never fatal.

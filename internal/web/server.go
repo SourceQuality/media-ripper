@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}", s.job)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancel)
 	mux.HandleFunc("POST /api/jobs/{id}/retry-import", s.retryImport)
+	mux.HandleFunc("POST /api/jobs/{id}/retry-delivery", s.retryDelivery)
 	mux.HandleFunc("POST /api/drives/{drive}/eject", s.eject)
 	mux.HandleFunc("POST /api/drives/{drive}/rescan", s.rescan)
 	mux.HandleFunc("POST /api/drives/{drive}/next", s.nextDisc)
@@ -145,6 +146,9 @@ func (s *Server) history(w http.ResponseWriter, r *http.Request) {
 	}
 	if h == nil {
 		h = []json.RawMessage{}
+	}
+	for i, raw := range h {
+		h[i] = s.markRetryDelivery(raw)
 	}
 	writeJSON(w, http.StatusOK, h)
 }
@@ -396,6 +400,35 @@ func (s *Server) retryImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, j)
+}
+
+// markRetryDelivery flags a failed job that can be delivered without its
+// disc, which depends on what is in the workspace now, not when it failed.
+func (s *Server) markRetryDelivery(raw json.RawMessage) json.RawMessage {
+	var j pipeline.Job
+	if json.Unmarshal(raw, &j) != nil || j.Stage != pipeline.StageFailed || !s.Manager.CanRetryDelivery(j) {
+		return raw
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return raw
+	}
+	fields["retry_delivery"] = json.RawMessage("true")
+	out, err := json.Marshal(fields)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
+// retryDelivery finishes a failed job from its kept rip, in the background.
+func (s *Server) retryDelivery(w http.ResponseWriter, r *http.Request) {
+	j, err := s.Manager.RetryDelivery(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, j)
 }
 
 func (s *Server) discardReview(w http.ResponseWriter, r *http.Request) {

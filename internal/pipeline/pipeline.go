@@ -93,6 +93,8 @@ type Manager struct {
 	runCtx context.Context
 	// finishing are paused jobs being finished without their disc.
 	finishing []*Job
+	// redelivering guards retryFailedDeliveries: one pass at a time.
+	redelivering atomic.Bool
 	// live is each job's Discord message, kept across settings changes
 	// and restarts.
 	live *notify.LiveMessages
@@ -234,10 +236,14 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 	go func() {
 		defer wg.Done()
 		m.finishEjected(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		m.watchKeptRips(ctx)
 	}()
 	go func() {
 		defer wg.Done()
@@ -316,6 +322,11 @@ func (m *Manager) cleanWorkspace() {
 			continue
 		}
 		m.log.Info("removing stale workspace", "path", p)
+		if st, ok := readResumeState(p); ok && undelivered(st) {
+			m.log.Warn("removing a kept rip that never reached the library", "label", st.Label, "job", st.JobID)
+			m.rt.Load().notifier.Send(context.Background(), notify.Event{Type: "expiring", Label: st.Label,
+				Summary: "This rip never reached the library and expired, so it was removed. Insert the disc again to rip it."})
+		}
 		_ = os.RemoveAll(p)
 	}
 }
@@ -591,7 +602,10 @@ func (r *runner) loop(ctx context.Context) {
 				r.mu.Lock()
 				r.ignored = true
 				if cfg.Eject.OnSuccess {
-					_ = d.Eject()
+					if d.Eject() == nil {
+						rt.notifier.Send(ctx, notify.Event{Type: "ready", Drive: r.path, Label: label, Title: rec.Title,
+							Summary: fmt.Sprintf("**%s** is already ripped and the tray is open.", rec.Title)})
+					}
 					// The tray is open; whatever comes next is a new insertion.
 					r.handled = ""
 				}
@@ -993,6 +1007,10 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		if lines, summary := progressLines(snap); lines != nil {
 			ev.Items, ev.Summary = lines, summary
 		}
+		if snap.Stage == StageFailed {
+			_, err := m.redeliverable(snap)
+			ev.RetryDelivery = err == nil
+		}
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case snap.Stage == StageSkipped:
 		_ = os.RemoveAll(workDir)
@@ -1019,9 +1037,16 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			return false
 		}
 		log.Info("ejected", "stage", snap.Stage)
-		if snap.Stage == StageDone || snap.Stage == StageReview {
-			job.rt.notifier.Send(context.WithoutCancel(ctx), m.event(job, "ready"))
+		ev := m.event(job, "ready")
+		switch snap.Stage {
+		case StageFailed:
+			ev.Summary = fmt.Sprintf("**%s** failed and the tray is open.", displayTitleSnap(snap))
+		case StageSkipped:
+			ev.Summary = fmt.Sprintf("**%s** was skipped and the tray is open.", displayTitleSnap(snap))
+		default:
+			ev.Summary = fmt.Sprintf("**%s** is finished and the tray is open.", displayTitleSnap(snap))
 		}
+		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	}
 	return eject
 }
