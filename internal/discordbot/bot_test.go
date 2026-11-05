@@ -97,8 +97,13 @@ func TestButtonPressIsAcknowledgedHandledAndShown(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("calls = %v", calls)
 	}
-	if calls[0] != "POST /interactions/int1/tok1/callback auth=Bot bot-token" || r.bodies[0]["type"] != float64(6) {
+	if calls[0] != "POST /interactions/int1/tok1/callback auth=Bot bot-token" || r.bodies[0]["type"] != float64(7) {
 		t.Fatalf("acknowledge = %s %v", calls[0], r.bodies[0])
+	}
+	// The press shows at once and the buttons go, so it cannot run twice.
+	ack := r.bodies[0]["data"].(map[string]any)
+	if c, _ := ack["components"].([]any); c == nil || len(c) != 0 || !strings.Contains(ack["content"].(string), "Working") {
+		t.Fatalf("acknowledge data = %v", ack)
 	}
 	if calls[1] != "PATCH /webhooks/123456789012345678/tok1/messages/@original auth=Bot bot-token" {
 		t.Fatalf("edit = %s", calls[1])
@@ -128,5 +133,28 @@ func TestOnlyAllowedUsersMayPress(t *testing.T) {
 	}
 	if data, _ := r.bodies[0]["data"].(map[string]any); data["flags"] != float64(64) {
 		t.Fatalf("refusal should be visible only to the presser: %v", r.bodies[0])
+	}
+}
+
+// An action can outlive the interaction token (15 minutes): its result then
+// goes through the bot's own message.
+func TestResultReportedAfterTokenExpires(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		mu.Unlock()
+		if strings.HasPrefix(r.URL.Path, "/webhooks/") {
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer api.Close()
+	b := &Bot{Token: "t", AppID: "app", APIBase: api.URL, Handle: func(context.Context, Interaction) string { return "Imported" }}
+	b.answer(context.Background(), Interaction{ID: "i", Token: "tok", UserName: "jack", ChannelID: "c1", MessageID: "m1"})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 3 || calls[2] != "PATCH /channels/c1/messages/m1" {
+		t.Fatalf("calls = %v", calls)
 	}
 }

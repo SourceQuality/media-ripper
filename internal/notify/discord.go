@@ -73,8 +73,6 @@ func (d *Discord) send(ctx context.Context, client *http.Client, ev Event) error
 	// One message per disc: what happens to a disc after it started is
 	// shown by editing its message, not by posting another.
 	switch ev.Type {
-	case "ready":
-		return nil // the disc's message already says the tray is open
 	case "interrupted", "review", "done", "failed":
 		if id := d.live(ev.JobID, "", ev.Type == "done" || ev.Type == "failed"); id != "" && ev.JobID != "" {
 			if _, ok := payload["components"]; !ok {
@@ -255,6 +253,9 @@ func discordEmbed(ev Event) map[string]any {
 	case "ready":
 		e["title"], e["color"] = "Ready for the next disc", colorGreen
 		e["description"] = fmt.Sprintf("**%s** is ripped and the tray is open. Copying and import carry on in the background.", name)
+		if ev.Summary != "" {
+			e["description"] = ev.Summary
+		}
 	case "label":
 		e["title"], e["color"] = "✋ Label the titles: "+name, colorAmber
 		e["description"] = strings.TrimSpace(ev.Match + "\nThe disc waits in the drive: open media-ripper to label its titles (with previews), then rip it, keep it for TheDiscDB, or eject it.")
@@ -286,6 +287,9 @@ func discordEmbed(ev Event) map[string]any {
 	case "skipped":
 		e["title"], e["color"] = "Skipped: "+name, colorGrey
 		e["description"] = ev.Error
+	case "expiring":
+		e["title"], e["color"] = "⚠️ Kept rip expiring: "+name, colorAmber
+		e["description"] = ev.Summary
 	case "storage":
 		if ev.Match == "recovered" {
 			e["title"], e["color"] = "Library storage is back", colorGreen
@@ -346,7 +350,12 @@ func components(ev Event) []any {
 	case ev.Type == "started" && ev.JobID != "":
 		row = []any{button(2, "Cancel", "mr:cancel:"+ev.JobID)}
 	case ev.Type == "failed" && ev.Drive != "":
-		row = []any{button(2, "Eject", "mr:eject:"+strings.TrimPrefix(ev.Drive, "/dev/"))}
+		if ev.RetryDelivery && ev.JobID != "" {
+			row = append(row, button(1, "Retry delivery", "mr:redeliver:"+ev.JobID))
+		}
+		row = append(row, button(2, "Eject", "mr:eject:"+strings.TrimPrefix(ev.Drive, "/dev/")))
+	case ev.Type == "expiring" && ev.RetryDelivery && ev.JobID != "":
+		row = []any{button(1, "Retry delivery", "mr:redeliver:"+ev.JobID)}
 	}
 	if row == nil {
 		return nil

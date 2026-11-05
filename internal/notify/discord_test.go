@@ -77,10 +77,14 @@ func TestDiscordWebhookAndTest(t *testing.T) {
 	if got.reqs[0].URL.Path != "/api/webhooks/1/abc" || got.body[0]["username"] != "media-ripper" {
 		t.Fatalf("webhook request %s %v", got.reqs[0].URL.Path, got.body[0])
 	}
-	// The disc's own message says the tray is open; no extra message.
-	n.Send(context.Background(), Event{Type: "ready", Title: "The Twilight Zone S01 D2"})
-	if len(got.body) != 1 {
-		t.Fatalf("ready posted a message: %v", got.body[1:])
+	// The tray opening gets a message of its own, so it notifies.
+	n.Send(context.Background(), Event{Type: "ready", Title: "The Twilight Zone S01 D2", Summary: "**The Twilight Zone S01 D2** is finished and the tray is open."})
+	if len(got.body) != 2 || got.reqs[1].Method != http.MethodPost {
+		t.Fatalf("ready messages: %v", got.body[1:])
+	}
+	embed := got.body[1]["embeds"].([]any)[0].(map[string]any)
+	if embed["title"] != "Ready for the next disc" || !strings.Contains(embed["description"].(string), "is finished") {
+		t.Fatalf("ready embed = %v", embed)
 	}
 }
 
@@ -135,6 +139,8 @@ func TestButtonsOnBotMessages(t *testing.T) {
 	n.Send(context.Background(), Event{Type: "failed", Drive: "/dev/sr0", Title: "x"})
 	n.Send(context.Background(), Event{Type: "done", JobID: "j3", Title: "x"})
 	n.Send(context.Background(), Event{Type: "done", JobID: "j4", Title: "x", ImportFailed: true})
+	n.Send(context.Background(), Event{Type: "failed", JobID: "j5", Drive: "/dev/sr0", Title: "x", RetryDelivery: true})
+	n.Send(context.Background(), Event{Type: "expiring", JobID: "j6", Title: "x", RetryDelivery: true})
 	ids := func(i int) []string {
 		var out []string
 		rows, _ := got.body[i]["components"].([]any)
@@ -159,6 +165,12 @@ func TestButtonsOnBotMessages(t *testing.T) {
 	}
 	if g := strings.Join(ids(4), ","); g != "mr:retry:j4" {
 		t.Fatalf("failed import buttons = %s", g)
+	}
+	if g := strings.Join(ids(5), ","); g != "mr:redeliver:j5,mr:eject:sr0" {
+		t.Fatalf("failed copy buttons = %s", g)
+	}
+	if g := strings.Join(ids(6), ","); g != "mr:redeliver:j6" {
+		t.Fatalf("expiring buttons = %s", g)
 	}
 	// A webhook message cannot carry working buttons.
 	hook, hookGot := discordServer(t, 204)
@@ -200,7 +212,7 @@ func TestLiveProgressMessage(t *testing.T) {
 			Items: []string{"✅ S01E16 The Hitch-Hiker · delivered", "▶️ S01E17 The Fever · ripping 40% · 20.1 MB/s · 3m0s left"}})
 		n.Send(ctx, Event{Type: "interrupted", JobID: "j1", Title: "The Twilight Zone S01 D3", Summary: "⏸ Paused"})
 		n.Send(ctx, Event{Type: "started", JobID: "j1", Title: "The Twilight Zone S01 D3"}) // resumed: same message
-		n.Send(ctx, Event{Type: "ready", JobID: "j1", Title: "The Twilight Zone S01 D3"})   // nothing new to say
+		n.Send(ctx, Event{Type: "ready", JobID: "j1", Title: "The Twilight Zone S01 D3"})   // its own message
 		n.Send(ctx, Event{Type: "done", JobID: "j1", Title: "The Twilight Zone S01 D3", Items: []string{"✅ S01E16 · imported"}})
 		n.Send(ctx, Event{Type: "progress", JobID: "j1", Summary: "after the end"}) // forgotten: no edit
 		srv.Close()
@@ -210,18 +222,18 @@ func TestLiveProgressMessage(t *testing.T) {
 		if mode == "webhook" {
 			wantEdit, wantPost = "PATCH /api/webhooks/1/abc/messages/msg42?", "POST /api/webhooks/1/abc?wait=true"
 		}
-		if len(reqs) != 5 || reqs[0] != wantPost {
+		if len(reqs) != 6 || reqs[0] != wantPost || reqs[4] != wantPost {
 			t.Fatalf("%s: requests = %v", mode, reqs)
 		}
-		for _, r := range reqs[1:] {
-			if r != wantEdit {
+		for i, r := range reqs[1:] {
+			if i+1 != 4 && r != wantEdit { // [4] is the ready message
 				t.Fatalf("%s: requests = %v", mode, reqs)
 			}
 		}
 		if title := bodies[2]["embeds"].([]any)[0].(map[string]any)["title"]; title != "Paused: The Twilight Zone S01 D3" {
 			t.Fatalf("%s: pause title = %v", mode, title)
 		}
-		if title := bodies[4]["embeds"].([]any)[0].(map[string]any)["title"]; title != "✅ Done: The Twilight Zone S01 D3" {
+		if title := bodies[5]["embeds"].([]any)[0].(map[string]any)["title"]; title != "✅ Done: The Twilight Zone S01 D3" {
 			t.Fatalf("%s: done title = %v", mode, title)
 		}
 		embed := bodies[1]["embeds"].([]any)[0].(map[string]any)
@@ -231,8 +243,8 @@ func TestLiveProgressMessage(t *testing.T) {
 			t.Fatalf("%s: progress embed = %v", mode, embed)
 		}
 		if mode == "bot" {
-			if c, _ := bodies[4]["components"].([]any); c == nil || len(c) != 0 {
-				t.Fatalf("final edit keeps buttons: %v", bodies[4]["components"])
+			if c, _ := bodies[5]["components"].([]any); c == nil || len(c) != 0 {
+				t.Fatalf("final edit keeps buttons: %v", bodies[5]["components"])
 			}
 		}
 	}
