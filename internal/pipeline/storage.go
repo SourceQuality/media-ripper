@@ -28,6 +28,10 @@ var (
 	storageInterval = time.Minute
 	storageTimeout  = 20 * time.Second
 	storageSlow     = 5 * time.Second
+	// storageAlertAfter is how long probes must keep failing before anyone
+	// is told. A big copy can delay a probe past storageTimeout while the
+	// share is fine; a real outage lasts.
+	storageAlertAfter = 10 * time.Minute
 )
 
 // storageMonitor probes the library folder by writing and removing a small
@@ -37,6 +41,9 @@ type storageMonitor struct {
 	mu       sync.Mutex
 	status   StorageStatus
 	inFlight bool
+	// downSince is when probes started failing; alerted, that a notice went out.
+	downSince time.Time
+	alerted   bool
 }
 
 func (s *storageMonitor) get() StorageStatus {
@@ -126,13 +133,27 @@ func probeStorage(path string) StorageStatus {
 	return res
 }
 
-// setStorage records a probe result and announces changes between usable
-// and unusable, so a share that drops out mid-evening is noticed.
+// setStorage records a probe result. A share that stays unusable is
+// announced, and its return only if that went out, so a share that drops out
+// mid-evening is noticed without a notice for every slow moment.
 func (m *Manager) setStorage(next StorageStatus) {
+	now := time.Now()
 	st := &m.storage
 	st.mu.Lock()
 	prev := st.status
 	st.status = next
+	var alert, back bool
+	if next.OK() {
+		back = st.alerted
+		st.downSince, st.alerted = time.Time{}, false
+	} else {
+		if st.downSince.IsZero() {
+			st.downSince = now
+		}
+		if !st.alerted && now.Sub(st.downSince) >= storageAlertAfter {
+			st.alerted, alert = true, true
+		}
+	}
 	st.mu.Unlock()
 	if next.OK() && !prev.OK() {
 		m.mu.Lock()
@@ -146,22 +167,20 @@ func (m *Manager) setStorage(next StorageStatus) {
 			}()
 		}
 	}
-	if prev.State == "" {
-		if !next.OK() {
-			m.log.Warn("library storage", "path", next.Path, "state", next.State, "err", next.Error)
-		}
-		return
-	}
-	if prev.OK() == next.OK() {
-		return
+	switch {
+	case !next.OK() && (prev.State == "" || prev.OK()):
+		m.log.Warn("library storage", "path", next.Path, "state", next.State, "err", next.Error)
+	case next.OK() && prev.State != "" && !prev.OK():
+		m.log.Info("library storage recovered", "path", next.Path, "latency_ms", next.LatencyMS)
 	}
 	ev := notify.Event{Type: "storage", Title: next.Path, Error: next.Error}
-	if next.OK() {
-		m.log.Info("library storage recovered", "path", next.Path, "latency_ms", next.LatencyMS)
-		ev.Match = "recovered"
-	} else {
-		m.log.Warn("library storage", "path", next.Path, "state", next.State, "err", next.Error)
+	switch {
+	case alert:
 		ev.Match = next.State
+	case back:
+		ev.Match = "recovered"
+	default:
+		return
 	}
 	m.rt.Load().notifier.Send(context.Background(), ev)
 }
