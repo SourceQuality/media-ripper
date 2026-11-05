@@ -128,3 +128,23 @@ func TestValidate(t *testing.T) {
 		t.Fatalf("bad mode: %v", err)
 	}
 }
+
+func TestOwnerWebhookIsASecret(t *testing.T) {
+	prev := Default()
+	prev.Notify.Discord.OwnerWebhookURL = "https://discord.example/hook"
+	prev.Notify.Discord.OwnerChannelID = "42"
+	red, set := prev.Redacted()
+	if red.Notify.Discord.OwnerWebhookURL != "" || !set["notify.discord.owner_webhook_url"] || red.Notify.Discord.OwnerChannelID != "42" {
+		t.Fatalf("redacted: %+v %v", red.Notify.Discord, set)
+	}
+	next := Default()
+	next.MergeSecrets(&prev, nil)
+	if next.Notify.Discord.OwnerWebhookURL != prev.Notify.Discord.OwnerWebhookURL {
+		t.Fatalf("merge lost the webhook: %+v", next.Notify.Discord)
+	}
+	next = Default()
+	next.MergeSecrets(&prev, []string{"notify.discord.owner_webhook_url"})
+	if next.Notify.Discord.OwnerWebhookURL != "" {
+		t.Fatal("clearing the webhook did not stick")
+	}
+}

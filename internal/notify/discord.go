@@ -287,6 +287,12 @@ func discordEmbed(ev Event) map[string]any {
 	case "skipped":
 		e["title"], e["color"] = "Skipped: "+name, colorGrey
 		e["description"] = ev.Error
+	case "drive_lost":
+		e["title"], e["color"] = "Drive not responding", colorRed
+		e["description"] = strings.TrimSpace(ev.DriveName + "\n" + ev.Summary)
+	case "drive_back":
+		e["title"], e["color"] = "Drive is back", colorGreen
+		e["description"] = strings.TrimSpace(ev.DriveName + "\n" + ev.Summary)
 	case "expiring":
 		e["title"], e["color"] = "⚠️ Kept rip expiring: "+name, colorAmber
 		e["description"] = ev.Summary

@@ -109,6 +109,13 @@ func Discover() []string {
 
 func (d *linuxDrive) Path() string { return d.path }
 
+// Present reports whether the device node exists. It sends the drive nothing,
+// and the node goes away when a USB drive disconnects.
+func (d *linuxDrive) Present() bool {
+	_, err := os.Stat(d.path)
+	return !errors.Is(err, os.ErrNotExist)
+}
+
 func (d *linuxDrive) fd() (int, error) {
 	fd, err := syscall.Open(d.path, syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_CLOEXEC, 0)
 	if err != nil {

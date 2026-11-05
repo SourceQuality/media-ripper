@@ -36,17 +36,27 @@ type fakeDrive struct {
 	label   string
 	ejected int
 	locked  bool
+	gone    bool
+	// ejectErrs is how many ejects fail before they work again.
+	ejectErrs int
 }
 
 func (d *fakeDrive) Path() string { return d.path }
 func (d *fakeDrive) Status() (drive.Status, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.gone {
+		return drive.NoInfo, fmt.Errorf("open %s: %w", d.path, os.ErrNotExist)
+	}
 	return d.status, nil
 }
 func (d *fakeDrive) Eject() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	if d.gone || d.ejectErrs > 0 {
+		d.ejectErrs--
+		return fmt.Errorf("open %s: %w", d.path, os.ErrNotExist)
+	}
 	d.ejected++
 	d.status = drive.TrayOpen
 	return nil

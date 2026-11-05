@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sourcequality/media-ripper/internal/makemkv"
 	"github.com/sourcequality/media-ripper/internal/notify"
@@ -79,7 +80,8 @@ func TestStorageMonitor(t *testing.T) {
 		t.Fatalf("path under a file: %+v", st)
 	}
 
-	// Changes between usable and unusable are announced once each.
+	// An outage that lasts is announced once, and its end once. A slow moment
+	// (a big copy can delay a probe) is announced to nobody.
 	var mu sync.Mutex
 	var events []notify.Event
 	hook := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -93,13 +95,33 @@ func TestStorageMonitor(t *testing.T) {
 	e := setup(t, movieInfo, nil)
 	e.m.deps.Notifier = &notify.Notifier{WebhookURL: hook.URL}
 	e.m.SetConfig(e.cfg)
-	for _, state := range []string{"ok", "slow", "unreachable", "unreachable", "ok"} {
+	probe := func(state string) {
 		e.m.setStorage(StorageStatus{Path: "/mnt/Media/Rips", State: state, Error: "timeout"})
 	}
-	mu.Lock()
-	got := append([]notify.Event(nil), events...)
-	mu.Unlock()
-	if len(got) != 2 || got[0].Match != "unreachable" || got[1].Match != "recovered" {
+	seen := func() []notify.Event {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]notify.Event(nil), events...)
+	}
+	for _, state := range []string{"ok", "slow", "unreachable", "unreachable", "ok"} {
+		probe(state)
+	}
+	if got := seen(); len(got) != 0 {
+		t.Fatalf("a short outage was announced: %+v", got)
+	}
+	probe("unreachable")
+	e.m.storage.mu.Lock()
+	e.m.storage.downSince = time.Now().Add(-storageAlertAfter - time.Minute)
+	e.m.storage.mu.Unlock()
+	for _, state := range []string{"unreachable", "unreachable", "ok", "ok"} {
+		probe(state)
+	}
+	if got := seen(); len(got) != 2 || got[0].Match != "unreachable" || got[1].Match != "recovered" {
+		t.Fatalf("events = %+v", got)
+	}
+	// The next outage starts its own clock.
+	probe("unreachable")
+	if got := seen(); len(got) != 2 {
 		t.Fatalf("events = %+v", got)
 	}
 
