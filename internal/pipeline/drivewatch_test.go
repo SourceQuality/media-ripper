@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -330,5 +331,40 @@ func TestPauseSavedBeforeStopping(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, jobFile)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type presentDrive struct {
+	drive.Drive
+	present  atomic.Bool
+	statuses atomic.Int32
+}
+
+func (d *presentDrive) Present() bool { return d.present.Load() }
+
+func (d *presentDrive) Status() (drive.Status, error) {
+	d.statuses.Add(1)
+	return drive.DiscOK, nil
+}
+
+// A healthy drive is left alone: only a waiting eject asks it anything.
+func TestWatcherDoesNotQueryHealthyDrive(t *testing.T) {
+	d := &presentDrive{}
+	d.present.Store(true)
+	r := &runner{}
+	if _, checked, err := r.lookAtDrive(d); err != nil || checked {
+		t.Fatalf("healthy: err=%v checked=%v", err, checked)
+	}
+	d.present.Store(false)
+	if _, _, err := r.lookAtDrive(d); !driveGone(err) {
+		t.Fatalf("missing: err=%v", err)
+	}
+	if n := d.statuses.Load(); n != 0 {
+		t.Fatalf("queried the hardware %d times", n)
+	}
+	d.present.Store(true)
+	r.job = &Job{mu: &sync.Mutex{}, ejectPending: true}
+	if _, checked, _ := r.lookAtDrive(d); !checked || d.statuses.Load() != 1 {
+		t.Fatalf("waiting eject: checked=%v statuses=%d", checked, d.statuses.Load())
 	}
 }

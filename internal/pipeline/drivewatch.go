@@ -52,7 +52,7 @@ func (r *runner) watchDrive(ctx context.Context, d drive.Drive) {
 			return
 		case <-t.C:
 		}
-		st, err := d.Status()
+		st, checked, err := r.lookAtDrive(d)
 		if err != nil && driveGone(err) {
 			if lostAt.IsZero() {
 				lostAt = time.Now()
@@ -77,10 +77,44 @@ func (r *runner) watchDrive(ctx context.Context, d drive.Drive) {
 			}
 			lostAt, announced = time.Time{}, false
 		}
-		if err == nil && time.Now().After(nextEject) && r.retryEject(ctx, d, st) {
+		if checked && err == nil && time.Now().After(nextEject) && r.retryEject(ctx, d, st) {
 			nextEject = time.Now().Add(ejectRetryEvery)
 		}
 	}
+}
+
+// presence is a drive that can say it is there without a command to the
+// hardware. Every second, for hours of ripping, that matters: this watcher
+// exists because USB bridges are fragile.
+type presence interface {
+	Present() bool
+}
+
+// lookAtDrive reports the drive's state for the watcher. The tray is only
+// asked about when an eject is waiting; checked says whether it was.
+func (r *runner) lookAtDrive(d drive.Drive) (st drive.Status, checked bool, err error) {
+	if p, ok := d.(presence); ok {
+		if !p.Present() {
+			return st, false, os.ErrNotExist
+		}
+		if !r.ejectWaiting() {
+			return st, false, nil
+		}
+	}
+	st, err = d.Status()
+	return st, true, err
+}
+
+func (r *runner) ejectWaiting() bool {
+	r.mu.Lock()
+	job := r.job
+	r.mu.Unlock()
+	if job == nil {
+		return false
+	}
+	job.mu.Lock()
+	defer job.mu.Unlock()
+	return job.ejectPending
 }
 
 func (r *runner) notifyDrive(ctx context.Context, typ, summary string) {
