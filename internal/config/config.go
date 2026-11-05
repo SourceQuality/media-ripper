@@ -284,6 +284,11 @@ type Discord struct {
 	BotToken      string `yaml:"bot_token" json:"bot_token"`
 	ChannelID     string `yaml:"channel_id" json:"channel_id"`
 	WebhookURL    string `yaml:"webhook_url" json:"webhook_url"`
+	// OwnerChannelID (posted to by the same bot) or OwnerWebhookURL gets the
+	// technical events and failure details; the channel above then gets
+	// plain messages. Empty: everything goes to the channel above.
+	OwnerChannelID  string `yaml:"owner_channel_id" json:"owner_channel_id"`
+	OwnerWebhookURL string `yaml:"owner_webhook_url" json:"owner_webhook_url"`
 	// Buttons puts Approve / Discard / Cancel / Eject on bot messages.
 	// AllowedUsers limits who may press them (Discord user ids); empty
 	// means anyone who can see the channel.
@@ -475,6 +480,10 @@ func (c *Config) KeepEnvOverrides(prev *Config) {
 			c.Notify.Discord.ChannelID = prev.Notify.Discord.ChannelID
 		case "notify.discord.webhook_url":
 			c.Notify.Discord.WebhookURL = prev.Notify.Discord.WebhookURL
+		case "notify.discord.owner_channel_id":
+			c.Notify.Discord.OwnerChannelID = prev.Notify.Discord.OwnerChannelID
+		case "notify.discord.owner_webhook_url":
+			c.Notify.Discord.OwnerWebhookURL = prev.Notify.Discord.OwnerWebhookURL
 		case "updates.token":
 			c.Updates.Token = prev.Updates.Token
 		case "arr.radarr.api_key":
@@ -537,6 +546,8 @@ func applyEnv(cfg *Config) {
 	set("MR_DISCORD_BOT_TOKEN", "notify.discord.bot_token", &cfg.Notify.Discord.BotToken)
 	set("MR_DISCORD_CHANNEL_ID", "notify.discord.channel_id", &cfg.Notify.Discord.ChannelID)
 	set("MR_DISCORD_WEBHOOK_URL", "notify.discord.webhook_url", &cfg.Notify.Discord.WebhookURL)
+	set("MR_DISCORD_OWNER_CHANNEL_ID", "notify.discord.owner_channel_id", &cfg.Notify.Discord.OwnerChannelID)
+	set("MR_DISCORD_OWNER_WEBHOOK_URL", "notify.discord.owner_webhook_url", &cfg.Notify.Discord.OwnerWebhookURL)
 	set("MR_GITHUB_TOKEN", "updates.token", &cfg.Updates.Token)
 	set("MR_RADARR_API_KEY", "arr.radarr.api_key", &cfg.Arr.Radarr.APIKey)
 	set("MR_SONARR_API_KEY", "arr.sonarr.api_key", &cfg.Arr.Sonarr.APIKey)
@@ -660,7 +671,7 @@ func (c *Config) RipDir() string { return filepath.Join(c.Workspace, "rips") }
 func (c *Config) StateDir() string { return filepath.Join(c.Workspace, "state") }
 
 // SecretKeys are the dotted keys whose values never leave the server.
-var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "updates.token", "auth.password_hash", "auth.api_token_hash", "arr.radarr.api_key", "arr.sonarr.api_key"}
+var SecretKeys = []string{"makemkv.key", "metadata.tmdb_api_key", "notify.ntfy_token", "notify.discord.bot_token", "notify.discord.webhook_url", "notify.discord.owner_webhook_url", "updates.token", "auth.password_hash", "auth.api_token_hash", "arr.radarr.api_key", "arr.sonarr.api_key"}
 
 func (c *Config) secret(key string) *string {
 	switch key {
@@ -674,6 +685,8 @@ func (c *Config) secret(key string) *string {
 		return &c.Notify.Discord.BotToken
 	case "notify.discord.webhook_url":
 		return &c.Notify.Discord.WebhookURL
+	case "notify.discord.owner_webhook_url":
+		return &c.Notify.Discord.OwnerWebhookURL
 	case "updates.token":
 		return &c.Updates.Token
 	case "auth.password_hash":

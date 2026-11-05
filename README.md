@@ -129,6 +129,19 @@ delivery** in the web UI and on Discord. Only titles that were never ripped
 need the disc. A kept rip is removed at the first start after
 `output.resume_max_age`; a notice goes out a day before.
 
+Copies run one at a time, and only a little is held in the kernel's write
+cache, so a slow share does not delay other work or a restart for long.
+
+**A drive that drops out** (USB drives can) is handled the same way: a job it
+fails runs again when the disc is back, reusing what was already ripped, up to
+3 times per disc. An eject that failed is tried again when the drive returns.
+A drive gone for over 30 seconds is reported, and again when it is back.
+
+**When someone else feeds the drive,** set `notify.discord.owner_channel_id`
+or `owner_webhook_url`: technical events and failure details go there, and
+the main channel gets plain messages like "Ready for the next disc" and "Put
+this disc back in". The JSON webhook and ntfy still get every event.
+
 **Extras** (manual mode) are not Radarr's or Sonarr's to import: they are
 kept in `_incoming/_extras/` until the movie or show is imported, then
 moved into its library folder, in the subfolders Plex and Jellyfin read

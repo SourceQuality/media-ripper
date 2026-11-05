@@ -242,6 +242,12 @@ notify:
     bot_token: ""           # or MR_DISCORD_BOT_TOKEN
     channel_id: ""          # or MR_DISCORD_CHANNEL_ID
     webhook_url: ""         # or MR_DISCORD_WEBHOOK_URL
+    # Optional: when someone else feeds the drive. Technical events (storage,
+    # the drive dropping, a kept rip expiring) and failure details go here,
+    # and the channel above gets plain messages ("Ready for the next disc",
+    # "Put this disc back in"). owner_channel_id uses the same bot.
+    owner_channel_id: ""    # or MR_DISCORD_OWNER_CHANNEL_ID
+    owner_webhook_url: ""   # or MR_DISCORD_OWNER_WEBHOOK_URL
     # Bot messages get buttons: Approve / Discard a disc waiting for review,
     # Cancel a rip, Eject after a failure. They arrive over the bot's own
     # connection to Discord; nothing needs to be reachable from outside.

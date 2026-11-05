@@ -119,7 +119,7 @@ func (m *Manager) recentJob(id string) *Job {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, j := range m.recent {
-		if j.ID == id {
+		if j.currentID() == id {
 			return j
 		}
 	}

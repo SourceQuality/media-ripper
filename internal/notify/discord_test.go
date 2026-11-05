@@ -292,3 +292,61 @@ func TestLabelMessageBecomesTheLiveOne(t *testing.T) {
 		t.Fatalf("requests = %v", reqs)
 	}
 }
+
+func TestOwnerGetsTheDetails(t *testing.T) {
+	srv, got := discordServer(t, 200)
+	n := &Notifier{Discord: &Discord{BotToken: "tok", ChannelID: "friend", apiBase: srv.URL}, Owner: &Discord{BotToken: "tok", ChannelID: "owner", apiBase: srv.URL}}
+	ctx := context.Background()
+	send := func(ev Event) map[string]string {
+		before := len(got.body)
+		n.Send(ctx, ev)
+		out := map[string]string{}
+		for i := before; i < len(got.body); i++ {
+			embed := got.body[i]["embeds"].([]any)[0].(map[string]any)
+			desc, _ := embed["description"].(string)
+			out[strings.Split(got.reqs[i].URL.Path, "/")[2]] = desc
+		}
+		return out
+	}
+	for _, typ := range []string{"storage", "expiring", "drive_lost", "drive_back"} {
+		if m := send(Event{Type: typ, Title: "x", Summary: "s"}); len(m) != 1 || m["owner"] == "" && typ != "storage" {
+			t.Fatalf("%s went to %v", typ, m)
+		}
+	}
+	m := send(Event{Type: "failed", Drive: "/dev/sr0", Title: "x", Error: "makemkvcon mkv: exit status 11"})
+	if !strings.Contains(m["owner"], "exit status 11") || m["friend"] != "Put this disc back in to try again." {
+		t.Fatalf("failed = %v", m)
+	}
+	m = send(Event{Type: "failed", Drive: "/dev/sr0", JobID: "j", Title: "x", Error: "mkdir: denied", RetryDelivery: true})
+	if !strings.Contains(m["friend"], "Nothing for you to do") || strings.Contains(m["friend"], "mkdir") {
+		t.Fatalf("failed copy = %v", m)
+	}
+	if m := send(Event{Type: "ready", Title: "x"}); len(m) != 1 || m["friend"] == "" {
+		t.Fatalf("ready went to %v", m)
+	}
+	if m := send(Event{Type: "done", Title: "x", Outputs: []string{"a"}}); len(m) != 1 || m["friend"] == "" {
+		t.Fatalf("done went to %v", m)
+	}
+	if m := send(Event{Type: "done", Title: "x", Warnings: []string{"radarr: no"}, Error: "radarr: no", ImportFailed: true}); len(m) != 2 {
+		t.Fatalf("done with warnings went to %v", m)
+	}
+}
+
+// With no owner target nothing changes: one channel gets everything.
+func TestNoOwnerKeepsOneChannel(t *testing.T) {
+	srv, got := discordServer(t, 200)
+	n := &Notifier{Discord: &Discord{BotToken: "tok", ChannelID: "friend", apiBase: srv.URL}, Owner: &Discord{BotToken: "tok", apiBase: srv.URL}}
+	n.Send(context.Background(), Event{Type: "failed", Drive: "/dev/sr0", Title: "x", Error: "exit status 11"})
+	n.Send(context.Background(), Event{Type: "drive_lost", Summary: "gone"})
+	if len(got.body) != 2 {
+		t.Fatalf("messages = %d", len(got.body))
+	}
+	for _, r := range got.reqs {
+		if !strings.Contains(r.URL.Path, "friend") {
+			t.Fatalf("posted to %s", r.URL.Path)
+		}
+	}
+	if d := got.body[0]["embeds"].([]any)[0].(map[string]any)["description"]; d != "exit status 11" {
+		t.Fatalf("failure text changed: %v", d)
+	}
+}

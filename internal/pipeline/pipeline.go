@@ -95,6 +95,11 @@ type Manager struct {
 	finishing []*Job
 	// redelivering guards retryFailedDeliveries: one pass at a time.
 	redelivering atomic.Bool
+	// deliverSlot lets one copy run at a time: copies share the link to
+	// the library, and two take longer than one after the other.
+	deliverSlot chan struct{}
+	// driveRetries counts, per disc, the runs lost to the drive dropping.
+	driveRetries map[string]int
 	// live is each job's Discord message, kept across settings changes
 	// and restarts.
 	live *notify.LiveMessages
@@ -121,7 +126,7 @@ func New(deps Deps) *Manager {
 	if deps.OpenDrive == nil {
 		deps.OpenDrive = drive.Open
 	}
-	m := &Manager{deps: deps, log: deps.Logger, started: time.Now()}
+	m := &Manager{deps: deps, log: deps.Logger, started: time.Now(), deliverSlot: make(chan struct{}, 1)}
 	m.live = &notify.LiveMessages{File: filepath.Join(deps.Config.StateDir(), "discord-messages.json")}
 	m.SetConfig(deps.Config)
 	return m
@@ -210,7 +215,9 @@ func (m *Manager) build(cfg *config.Config) *runtime {
 	if rt.notifier == nil {
 		rt.notifier = &notify.Notifier{WebhookURL: cfg.Notify.WebhookURL, NtfyURL: cfg.Notify.NtfyURL, NtfyToken: cfg.Notify.NtfyToken, Logger: m.log,
 			Discord: &notify.Discord{BotToken: cfg.Notify.Discord.BotToken, ChannelID: cfg.Notify.Discord.ChannelID, WebhookURL: cfg.Notify.Discord.WebhookURL,
-				Buttons: cfg.Notify.Discord.Buttons, Live: m.live}}
+				Buttons: cfg.Notify.Discord.Buttons, Live: m.live},
+			Owner: &notify.Discord{BotToken: cfg.Notify.Discord.BotToken, ChannelID: cfg.Notify.Discord.OwnerChannelID, WebhookURL: cfg.Notify.Discord.OwnerWebhookURL,
+				Buttons: cfg.Notify.Discord.Buttons}}
 	}
 	return rt
 }
@@ -236,7 +243,12 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
-	wg.Add(5)
+	wg.Add(6)
+	go func() {
+		defer wg.Done()
+		<-ctx.Done()
+		m.savePausedJobs()
+	}()
 	go func() {
 		defer wg.Done()
 		m.finishEjected(ctx)
@@ -435,7 +447,7 @@ func (m *Manager) Cancel(jobID string) error {
 	runners := append([]*runner(nil), m.runners...)
 	m.mu.Unlock()
 	for _, r := range runners {
-		if j := r.current(); j != nil && j.ID == jobID {
+		if j := r.current(); j != nil && j.currentID() == jobID {
 			j.mu.Lock()
 			c := j.cancel
 			j.mu.Unlock()
@@ -453,7 +465,7 @@ func (m *Manager) Job(id string) (Job, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, j := range m.recent {
-		if j.ID == id {
+		if j.currentID() == id {
 			return j.Snapshot(), true
 		}
 	}
@@ -532,6 +544,11 @@ func (r *runner) loop(ctx context.Context) {
 	if r.m.Config().Eject.CloseTrayOnStart {
 		_ = d.CloseTray()
 	}
+	r.m.running.Add(1)
+	go func() {
+		defer r.m.running.Done()
+		r.watchDrive(ctx, d)
+	}()
 	errCount := 0
 	for {
 		rt := r.m.rt.Load()
@@ -624,9 +641,13 @@ func (r *runner) loop(ctx context.Context) {
 		r.next = "" // once, for this disc
 		r.mu.Unlock()
 		r.m.remember(job)
-		if r.m.runJob(ctx, d, job) {
+		ejected := r.m.runJob(ctx, d, job)
+		retry := false
+		job.set(func(j *Job) { retry = j.retryDisc })
+		if ejected || retry {
 			// We ejected, so the next disc-ok is a fresh insertion even if it
-			// arrives before we observe the open tray.
+			// arrives before we observe the open tray. A disc to retry counts
+			// as a fresh insertion too.
 			r.mu.Lock()
 			r.handled = ""
 			r.mu.Unlock()
@@ -884,11 +905,17 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 	if bgFailed() == nil && ctx.Err() == nil {
 		// While the disc is still in: for contributing it to TheDiscDB.
 		m.keepFolder(ctx, job, d.Path())
+		job.set(func(j *Job) { // it reports over a background copy's state
+			if j.copyWaiting {
+				j.Message = waitingForCopy
+			}
+		})
 	}
 	if bgFailed() == nil && cfg.Eject.AfterRip && cfg.Eject.OnSuccess {
 		_ = d.Lock(false)
 		if err := d.Eject(); err != nil {
 			log.Warn("eject", "err", err)
+			job.set(func(j *Job) { j.ejectPending = true }) // for when the drive is back
 		} else {
 			job.set(func(j *Job) { j.Ejected = true })
 			job.logf("ejected")
@@ -962,6 +989,10 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		m.pauseForRestart(ctx, d, job)
 		return snap.Ejected
 	}
+	if m.pauseForDrive(ctx, d, job) {
+		return false
+	}
+	snap = job.Snapshot() // giving up rewrites the error
 
 	switch {
 	case snap.Contribute && snap.Stage == StageDone:
@@ -985,6 +1016,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 			}
 		}
 		_ = os.RemoveAll(workDir)
+		m.clearDriveRetries(snap.Fingerprint)
 		m.markBoxSet(snap)
 		m.saveInventory(job)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
@@ -1024,7 +1056,12 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	}
 
 	_ = d.Lock(false)
-	if snap.Ejected {
+	already := false
+	job.set(func(j *Job) { // the watcher may have got there first
+		already = j.Ejected
+		j.ejectPending = false
+	})
+	if already {
 		return true
 	}
 	// A cancel is a person at the web UI, usually about to change settings
@@ -1034,19 +1071,11 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 	if eject {
 		if err := d.Eject(); err != nil {
 			log.Warn("eject", "err", err)
+			job.set(func(j *Job) { j.ejectPending = true }) // for when the drive is back
 			return false
 		}
 		log.Info("ejected", "stage", snap.Stage)
-		ev := m.event(job, "ready")
-		switch snap.Stage {
-		case StageFailed:
-			ev.Summary = fmt.Sprintf("**%s** failed and the tray is open.", displayTitleSnap(snap))
-		case StageSkipped:
-			ev.Summary = fmt.Sprintf("**%s** was skipped and the tray is open.", displayTitleSnap(snap))
-		default:
-			ev.Summary = fmt.Sprintf("**%s** is finished and the tray is open.", displayTitleSnap(snap))
-		}
-		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
+		job.rt.notifier.Send(context.WithoutCancel(ctx), m.readyEvent(job))
 	}
 	return eject
 }
@@ -1432,8 +1461,24 @@ func mkvTitle(job *Job, pick selector.Pick) string {
 	return s.Identity.Title
 }
 
+const waitingForCopy = "waiting for another copy to finish"
+
 func (m *Manager) deliver(ctx context.Context, job *Job, disc *makemkv.Disc, pick selector.Pick, file string) (Output, error) {
 	cfg := job.rt.cfg
+	select {
+	case m.deliverSlot <- struct{}{}:
+	default:
+		job.stepStage(StageDelivering, waitingForCopy)
+		job.set(func(j *Job) { j.copyWaiting = true })
+		defer job.set(func(j *Job) { j.copyWaiting = false })
+		select {
+		case m.deliverSlot <- struct{}{}:
+		case <-ctx.Done():
+			return Output{}, ctx.Err()
+		}
+		job.set(func(j *Job) { j.copyWaiting = false })
+	}
+	defer func() { <-m.deliverSlot }()
 	job.stepStage(StageDelivering, "copying "+pickName(pick)+" to library")
 	dest, err := destPath(cfg, job.rt, job.Snapshot(), pick, filepath.Ext(file), disc.IsBluray())
 	if err != nil {
@@ -1517,7 +1562,7 @@ func moveFile(ctx context.Context, src, dst string, mode os.FileMode, progress f
 	if err != nil {
 		return 0, err
 	}
-	n, err := copyCtx(ctx, out, in, func(done int64) {
+	n, err := copyCtx(ctx, &syncingWriter{f: out}, in, func(done int64) {
 		if progress != nil {
 			progress(done, st.Size())
 		}
@@ -1525,10 +1570,11 @@ func moveFile(ctx context.Context, src, dst string, mode os.FileMode, progress f
 	if err == nil {
 		err = out.Sync()
 	}
-	if cerr := out.Close(); err == nil {
-		err = cerr
-	}
 	if err != nil {
+		abandon(out, tmp)
+		return 0, err
+	}
+	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return 0, err
 	}
@@ -1543,6 +1589,46 @@ func moveFile(ctx context.Context, src, dst string, mode os.FileMode, progress f
 	_ = os.Chmod(dst, mode) // the umask applied when it was created
 	_ = os.Remove(src)
 	return n, nil
+}
+
+// copySyncEvery bounds what a copy leaves in the kernel's write cache. Left
+// alone, Linux caches gigabytes for a slow share: the progress bar runs ahead
+// of the network, anything else touching the share waits behind it, and the
+// process cannot exit until it has drained.
+const copySyncEvery = 64 << 20
+
+type syncingWriter struct {
+	f     *os.File
+	dirty int64
+}
+
+func (w *syncingWriter) Write(p []byte) (int, error) {
+	n, err := w.f.Write(p)
+	w.dirty += int64(n)
+	if err == nil && w.dirty >= copySyncEvery {
+		w.dirty = 0
+		err = w.f.Sync()
+	}
+	return n, err
+}
+
+// abandonWait is how long a stopped copy waits for its file to close.
+var abandonWait = 3 * time.Second
+
+// abandon closes and removes a copy that stopped, without waiting on a slow
+// share for long: closing flushes what is cached. A leftover .part is
+// overwritten by the next attempt.
+func abandon(f *os.File, tmp string) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = f.Close()
+		_ = os.Remove(tmp)
+	}()
+	select {
+	case <-done:
+	case <-time.After(abandonWait):
+	}
 }
 
 // mkdirAll creates dir and its missing parents with exactly mode: the

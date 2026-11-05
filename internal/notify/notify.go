@@ -19,13 +19,16 @@ type Notifier struct {
 	NtfyURL    string
 	NtfyToken  string
 	Discord    *Discord
-	Client     *http.Client
-	Logger     *slog.Logger
+	// Owner, when set, gets the technical events and failure details, and
+	// Discord gets plain messages for whoever is feeding the drive.
+	Owner  *Discord
+	Client *http.Client
+	Logger *slog.Logger
 }
 
 // Event is what gets sent.
 type Event struct {
-	Type  string `json:"type"` // started | label | ready | done | failed | skipped | review | storage | expiring | test
+	Type  string `json:"type"` // started | label | ready | done | failed | skipped | review | storage | expiring | drive_lost | drive_back | test
 	JobID string `json:"job_id,omitempty"`
 	Drive string `json:"drive"`
 	// DriveName is the drive model, e.g. "HL-DT-ST BD-RE BU40N".
@@ -61,14 +64,14 @@ func (n *Notifier) Send(ctx context.Context, ev Event) {
 // Test sends a test event and reports the first failure, for the
 // settings page.
 func (n *Notifier) Test(ctx context.Context) error {
-	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "" && !n.Discord.enabled()) {
+	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "" && !n.Discord.enabled() && !n.Owner.enabled()) {
 		return errors.New("no notification target is configured")
 	}
 	return n.send(ctx, Event{Type: "test", Title: "Test"})
 }
 
 func (n *Notifier) send(ctx context.Context, ev Event) error {
-	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "" && !n.Discord.enabled()) {
+	if n == nil || (n.WebhookURL == "" && n.NtfyURL == "" && !n.Discord.enabled() && !n.Owner.enabled()) {
 		return nil
 	}
 	if ev.Time.IsZero() {
@@ -123,10 +126,44 @@ func (n *Notifier) send(ctx context.Context, ev Event) error {
 		}
 		report("ntfy", err)
 	}
-	if n.Discord.enabled() {
-		report("discord", n.Discord.send(ctx, client, ev))
+	forDrive, forOwner := n.route(ev)
+	if forDrive != nil && n.Discord.enabled() {
+		report("discord", n.Discord.send(ctx, client, *forDrive))
+	}
+	if forOwner != nil {
+		report("discord owner", n.Owner.send(ctx, client, *forOwner))
 	}
 	return errors.Join(errs...)
+}
+
+// route splits an event between the main Discord channel and the owner's.
+// Without an owner target everything goes to the main channel.
+func (n *Notifier) route(ev Event) (forDrive, forOwner *Event) {
+	if !n.Owner.enabled() {
+		return &ev, nil
+	}
+	switch ev.Type {
+	case "storage", "expiring", "drive_lost", "drive_back":
+		return nil, &ev
+	case "review", "test":
+		return &ev, &ev
+	case "failed":
+		plain := ev
+		plain.RetryDelivery = false
+		plain.Error = "Put this disc back in to try again."
+		if ev.RetryDelivery {
+			plain.Error = "The disc was read fine, and the copy will try again by itself. Nothing for you to do."
+		}
+		return &plain, &ev
+	case "done":
+		if !ev.ImportFailed && ev.Error == "" && len(ev.Warnings) == 0 {
+			return &ev, nil
+		}
+		plain := ev
+		plain.ImportFailed, plain.Error, plain.Warnings = false, "", nil
+		return &plain, &ev
+	}
+	return &ev, nil
 }
 
 func (n *Notifier) do(client *http.Client, req *http.Request) error {
@@ -161,6 +198,10 @@ func ntfyTitle(ev Event) string {
 		return "Waiting for review: " + name
 	case "label":
 		return "Label the titles: " + name
+	case "drive_lost":
+		return "Drive not responding"
+	case "drive_back":
+		return "Drive is back"
 	case "storage":
 		if ev.Match == "recovered" {
 			return "Library storage is back"

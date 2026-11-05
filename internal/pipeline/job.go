@@ -132,7 +132,16 @@ type Job struct {
 	// earlier ones are remuxed and delivered alongside; their steps go to
 	// the job log so the stage keeps showing the rip.
 	ripping bool
-	rt      *runtime
+	// driveLost: the drive vanished during this job. retryDisc: the job was
+	// given up on for that, and the disc runs again.
+	driveLost, retryDisc bool
+	// ejectPending: an eject failed; the watcher tries again up to
+	// maxEjectTries times.
+	ejectPending bool
+	ejectTries   int
+	// copyWaiting: a title is waiting for another job's copy to finish.
+	copyWaiting bool
+	rt          *runtime
 }
 
 // CatalogDisc identifies a disc within a catalogued release.
@@ -256,6 +265,14 @@ func (j *Job) set(fn func(j *Job)) {
 
 // stepStage sets the stage for a remux or delivery step, or only logs it
 // while a rip of a later title is still running.
+// currentID reads the id safely: a job carrying on an earlier attempt takes
+// over its id while the UI may be looking it up.
+func (j *Job) currentID() string {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.ID
+}
+
 func (j *Job) stepStage(s Stage, msg string) {
 	j.mu.Lock()
 	ripping := j.ripping
