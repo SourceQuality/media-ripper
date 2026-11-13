@@ -100,6 +100,27 @@ func modelFrom(sysBlock, path string) string {
 	return strings.TrimSpace(read("vendor") + " " + read("model"))
 }
 
+// Port names where a drive is attached, from sysfs: the USB port or ATA link
+// above its SCSI host. A USB drive that resets can come back as another
+// /dev/srN (while something still holds the old node open) but on the same
+// port. "" when sysfs has nothing for path.
+func Port(path string) string { return portFrom("/sys/class/block", path) }
+
+func portFrom(sysBlock, path string) string {
+	real, err := filepath.EvalSymlinks(path) // /dev/cdrom -> /dev/sr0
+	if err != nil {
+		real = path
+	}
+	dev, err := filepath.EvalSymlinks(filepath.Join(sysBlock, filepath.Base(real), "device"))
+	if err != nil {
+		return ""
+	}
+	if i := strings.Index(dev, "/host"); i > 0 {
+		return dev[:i]
+	}
+	return dev
+}
+
 // Discover lists /dev/sr* nodes in order.
 func Discover() []string {
 	matches, _ := filepath.Glob("/dev/sr[0-9]*")

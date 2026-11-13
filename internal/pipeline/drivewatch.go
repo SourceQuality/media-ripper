@@ -64,6 +64,10 @@ func (r *runner) watchDrive(ctx context.Context, d drive.Drive) {
 					job.set(func(j *Job) { j.driveLost = true })
 				}
 			}
+			if !announced && time.Since(lostAt) >= driveLostAfter && r.m.servedElsewhere(r) {
+				announced = true // back under another name; nothing to tell anyone
+				r.log.Info("drive is back under another name")
+			}
 			if !announced && time.Since(lostAt) >= driveLostAfter {
 				announced = true
 				r.notifyDrive(ctx, "drive_lost", fmt.Sprintf("`%s` has not answered since %s. It may need replugging.", r.path, lostAt.Format("15:04:05 MST")))
