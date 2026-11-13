@@ -3,6 +3,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -612,7 +613,7 @@ func (r *runner) loop(ctx context.Context) {
 		r.ignored = false
 		r.mu.Unlock()
 
-		if !forced && !contribute && !cfg.Eject.ReripSameDisc {
+		if !forced && !contribute && !cfg.Eject.ReripSameDisc && !r.m.reripWanted(fp) {
 			if rec, ok := r.m.deps.Store.Disc(fp); ok {
 				r.log.Info("disc already ripped; ejecting", "label", label, "ripped_at", rec.RippedAt.Format(time.RFC3339))
 				rt.notifier.Send(ctx, notify.Event{Type: "skipped", Drive: r.path, Label: label, Title: rec.Title, Error: "already ripped"})
@@ -956,6 +957,10 @@ func (m *Manager) runJob(ctx context.Context, d drive.Drive, job *Job) (ejected 
 			}
 		}
 	}
+	if !m.applyTitleChange(job) {
+		job.setStage(StageDone, "done")
+		return false
+	}
 	if needsReview(job.Snapshot(), job.rt) {
 		m.holdForReview(job)
 		return false
@@ -1017,6 +1022,7 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		}
 		_ = os.RemoveAll(workDir)
 		m.clearDriveRetries(snap.Fingerprint)
+		m.reripDone(job)
 		m.markBoxSet(snap)
 		m.saveInventory(job)
 		log.Info("done", "title", displayTitle(job), "files", len(outs), "elapsed", snap.Elapsed, "warnings", len(snap.Warnings))
@@ -1042,6 +1048,13 @@ func (m *Manager) finish(ctx context.Context, d drive.Drive, job *Job) bool {
 		if snap.Stage == StageFailed {
 			_, err := m.redeliverable(snap)
 			ev.RetryDelivery = err == nil
+		}
+		var restarting bool
+		job.set(func(j *Job) { restarting = j.restarting })
+		if restarting {
+			// Stopped to be ripped again with a corrected title: its message
+			// says so, nobody is alerted.
+			ev.Type, ev.Summary = "interrupted", "⏸ The title was corrected; the disc is ripped again, reusing what was ripped."
 		}
 		job.rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	case snap.Stage == StageSkipped:
@@ -1183,6 +1196,11 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 		j.DiscType = disc.Type
 		j.Titles = summarize(disc)
 	})
+	if data, err := json.Marshal(disc); err == nil && !job.Snapshot().DryRun {
+		if err := m.deps.Store.SaveScan(job.ID, data); err != nil {
+			log.Warn("save disc scan", "err", err)
+		}
+	}
 	job.logf("%s, %d titles", disc.Type, len(disc.Titles))
 	for _, t := range disc.Titles {
 		job.logf("  title %d: %s, %d chapters, %d audio, %d subs, %s", t.ID, t.Duration.Round(time.Second), t.Chapters, t.AudioCount(), t.SubtitleCount(), t.Size)
@@ -1233,17 +1251,7 @@ func (m *Manager) scanIdentifySelect(ctx context.Context, job *Job) (*makemkv.Di
 
 	// 3. Select.
 	job.setStage(StageSelecting, "choosing titles")
-	opts := selector.Options{
-		MovieRuntimeTolerance: cfg.Selection.MovieRuntimeTolerance.D(),
-		TVEpisodeTolerance:    cfg.Selection.TVEpisodeTolerance,
-		MinMovieDuration:      cfg.Selection.MinMovieDuration.D(),
-		MinEpisodeDuration:    cfg.Selection.MinEpisodeDuration.D(),
-		UnidentifiedStrategy:  cfg.Selection.UnidentifiedStrategy,
-		AllowDoubleEpisodes:   cfg.Selection.AllowDoubleEpisodes,
-	}
-	if id.Kind == metadata.KindTV {
-		opts.NextEpisode = m.deps.Store.NextEpisode(seriesKey(id), id.Season)
-	}
+	opts := m.selectOptions(cfg, id)
 	var sel *selector.Selection
 	if isConfirmed && len(confirmed.Episodes) > 0 {
 		sel, err = selector.SelectFromCatalog(disc, id, confirmedEntries(confirmed), "Confirmed")
@@ -1690,6 +1698,9 @@ func copyCtx(ctx context.Context, dst io.Writer, src io.Reader, progress func(do
 func (m *Manager) event(job *Job, typ string) notify.Event {
 	s := job.Snapshot()
 	ev := notify.Event{Type: typ, JobID: s.ID, Drive: s.Drive, DriveName: drive.Model(s.Drive), Label: s.Label, Title: displayTitleSnap(s), Warnings: s.Warnings}
+	if typ == "started" || typ == "done" || typ == "review" {
+		ev.TitleFixable = m.titleProblem(s) == nil
+	}
 	ev.Match = verification(s)
 	if s.Selection != nil {
 		for _, p := range s.Selection.Picks {

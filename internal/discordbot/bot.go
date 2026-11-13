@@ -20,8 +20,18 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Interaction is a button press.
+// Interaction is a button press, a pick from a menu (Values) or a form sent
+// (Type 5, Fields).
 type Interaction struct {
+	// Type is Discord's: 3 for a button or menu, 5 for a submitted form.
+	Type int
+	// Values are the options picked in a menu.
+	Values []string
+	// Fields are a submitted form's inputs, by input id.
+	Fields map[string]string
+	// Ephemeral: the pressed message is only shown to the person who
+	// pressed; it cannot be edited through the channel.
+	Ephemeral bool
 	// ChannelID and MessageID locate the pressed message; an action that
 	// outlives the interaction token (15 minutes) reports through them.
 	ChannelID, MessageID string
@@ -36,14 +46,46 @@ type Interaction struct {
 // It may take minutes (an import); the press is acknowledged before.
 type Handler func(ctx context.Context, in Interaction) string
 
+// Modal is a form Discord shows in answer to a button.
+type Modal struct {
+	CustomID string // returned with the submitted form
+	Title    string // at most 45 characters
+	Inputs   []TextInput
+}
+
+// TextInput is one line of a Modal.
+type TextInput struct {
+	ID, Label, Value, Placeholder string
+	Required                      bool
+}
+
+// Menu answers a submitted form: a text, and a menu to pick from when there
+// are Options (at most 25 are shown).
+type Menu struct {
+	Content     string
+	CustomID    string
+	Placeholder string
+	Options     []Option
+}
+
+// Option is one choice in a Menu.
+type Option struct {
+	Label, Value, Description string
+}
+
 // Bot keeps the Gateway connection up and dispatches presses.
 type Bot struct {
 	Token   string
 	AppID   string   // learned from READY when empty
 	Allowed []string // user ids allowed to press; empty = anyone in the channel
 	Handle  Handler
-	Logger  *slog.Logger
-	HTTP    *http.Client
+	// Modal, when set, may answer a button with a form instead of running
+	// Handle (nil: run Handle).
+	Modal func(in Interaction) *Modal
+	// Submit answers a submitted form, privately to the person who sent it.
+	Submit func(ctx context.Context, in Interaction) Menu
+	Logger *slog.Logger
+	HTTP   *http.Client
 
 	GatewayURL string // tests
 	APIBase    string // tests
@@ -211,16 +253,33 @@ func (b *Bot) dispatch(ctx context.Context, f frame) {
 			User      *user  `json:"user"`
 			ChannelID string `json:"channel_id"`
 			Message   struct {
-				ID string `json:"id"`
+				ID    string `json:"id"`
+				Flags int    `json:"flags"`
 			} `json:"message"`
 			Data struct {
-				CustomID string `json:"custom_id"`
+				CustomID   string   `json:"custom_id"`
+				Values     []string `json:"values"`
+				Components []struct {
+					Components []struct {
+						CustomID string `json:"custom_id"`
+						Value    string `json:"value"`
+					} `json:"components"`
+				} `json:"components"`
 			} `json:"data"`
 		}
-		if json.Unmarshal(f.D, &d) != nil || d.Type != 3 || !strings.HasPrefix(d.Data.CustomID, "mr:") {
+		if json.Unmarshal(f.D, &d) != nil || (d.Type != 3 && d.Type != 5) || !strings.HasPrefix(d.Data.CustomID, "mr:") {
 			return
 		}
-		in := Interaction{ID: d.ID, Token: d.Token, CustomID: d.Data.CustomID, ChannelID: d.ChannelID, MessageID: d.Message.ID}
+		in := Interaction{Type: d.Type, ID: d.ID, Token: d.Token, CustomID: d.Data.CustomID, Values: d.Data.Values,
+			ChannelID: d.ChannelID, MessageID: d.Message.ID, Ephemeral: d.Message.Flags&64 != 0}
+		if d.Type == 5 {
+			in.Fields = map[string]string{}
+			for _, row := range d.Data.Components {
+				for _, c := range row.Components {
+					in.Fields[c.CustomID] = c.Value
+				}
+			}
+		}
 		if d.Member != nil {
 			in.UserID, in.UserName = d.Member.User.ID, d.Member.User.Username
 		} else if d.User != nil {
@@ -249,22 +308,30 @@ func (b *Bot) answer(ctx context.Context, in Interaction) {
 		who = "someone"
 	}
 	none := map[string]any{"parse": []string{}}
+	callback := fmt.Sprintf("/interactions/%s/%s/callback", in.ID, in.Token)
+	if in.Type == 5 {
+		b.answerForm(ctx, in, callback, none)
+		return
+	}
+	if b.Modal != nil {
+		if md := b.Modal(in); md != nil {
+			// 9: show a form; the message and its buttons stay as they are.
+			if err := b.post(ctx, callback, map[string]any{"type": 9, "data": modalData(md)}); err != nil {
+				b.log().Warn("discord: open form", "err", err)
+			}
+			return
+		}
+	}
 	// 7: update the pressed message as the response.
 	working := map[string]any{"type": 7, "data": map[string]any{"content": fmt.Sprintf("⏳ Working on it — %s", who), "components": []any{}, "allowed_mentions": none}}
-	if err := b.post(ctx, fmt.Sprintf("/interactions/%s/%s/callback", in.ID, in.Token), working); err != nil {
+	if err := b.post(ctx, callback, working); err != nil {
 		b.log().Warn("discord: acknowledge", "err", err)
 		return
 	}
 	result := b.Handle(ctx, in)
-	b.mu.Lock()
-	app := b.AppID
-	if app == "" {
-		app = b.appID
-	}
-	b.mu.Unlock()
 	edit := map[string]any{"content": fmt.Sprintf("%s — %s", result, who), "components": []any{}, "allowed_mentions": none}
-	err := b.request(ctx, http.MethodPatch, fmt.Sprintf("/webhooks/%s/%s/messages/@original", app, in.Token), edit)
-	if err != nil && in.ChannelID != "" && in.MessageID != "" {
+	err := b.request(ctx, http.MethodPatch, b.originalPath(in), edit)
+	if err != nil && !in.Ephemeral && in.ChannelID != "" && in.MessageID != "" {
 		// The interaction token lasts 15 minutes; the bot's own message
 		// can still be edited after that.
 		err = b.request(ctx, http.MethodPatch, fmt.Sprintf("/channels/%s/messages/%s", in.ChannelID, in.MessageID), edit)
@@ -272,6 +339,80 @@ func (b *Bot) answer(ctx context.Context, in Interaction) {
 	if err != nil {
 		b.log().Warn("discord: update message", "err", err)
 	}
+}
+
+// answerForm acknowledges a submitted form with a private "thinking"
+// message, then replaces it with the handler's answer and menu.
+func (b *Bot) answerForm(ctx context.Context, in Interaction, callback string, none map[string]any) {
+	if b.Submit == nil {
+		return
+	}
+	// 5: deferred reply; flags 64: only the person who sent the form sees it.
+	if err := b.post(ctx, callback, map[string]any{"type": 5, "data": map[string]any{"flags": 64}}); err != nil {
+		b.log().Warn("discord: acknowledge form", "err", err)
+		return
+	}
+	menu := b.Submit(ctx, in)
+	reply := map[string]any{"content": menu.Content, "components": []any{}, "allowed_mentions": none}
+	if len(menu.Options) > 0 {
+		var opts []any
+		for i, o := range menu.Options {
+			if i == 25 {
+				break
+			}
+			opt := map[string]any{"label": clip(o.Label, 100), "value": clip(o.Value, 100)}
+			if o.Description != "" {
+				opt["description"] = clip(o.Description, 100)
+			}
+			opts = append(opts, opt)
+		}
+		sel := map[string]any{"type": 3, "custom_id": menu.CustomID, "options": opts}
+		if menu.Placeholder != "" {
+			sel["placeholder"] = clip(menu.Placeholder, 150)
+		}
+		reply["components"] = []any{map[string]any{"type": 1, "components": []any{sel}}}
+	}
+	if err := b.request(ctx, http.MethodPatch, b.originalPath(in), reply); err != nil {
+		b.log().Warn("discord: answer form", "err", err)
+	}
+}
+
+func modalData(md *Modal) map[string]any {
+	var rows []any
+	for i, t := range md.Inputs {
+		if i == 5 {
+			break
+		}
+		in := map[string]any{"type": 4, "custom_id": t.ID, "label": clip(t.Label, 45), "style": 1, "required": t.Required, "max_length": 100}
+		if t.Value != "" {
+			in["value"] = clip(t.Value, 100)
+		}
+		if t.Placeholder != "" {
+			in["placeholder"] = clip(t.Placeholder, 100)
+		}
+		rows = append(rows, map[string]any{"type": 1, "components": []any{in}})
+	}
+	return map[string]any{"custom_id": md.CustomID, "title": clip(md.Title, 45), "components": rows}
+}
+
+// originalPath is the interaction's own message: the pressed one for a
+// button or menu, the reply for a form.
+func (b *Bot) originalPath(in Interaction) string {
+	b.mu.Lock()
+	app := b.AppID
+	if app == "" {
+		app = b.appID
+	}
+	b.mu.Unlock()
+	return fmt.Sprintf("/webhooks/%s/%s/messages/@original", app, in.Token)
+}
+
+func clip(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
 }
 
 func (b *Bot) post(ctx context.Context, path string, body any) error {

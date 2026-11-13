@@ -348,13 +348,25 @@ func components(ev Event) []any {
 		return map[string]any{"type": 2, "style": style, "label": label, "custom_id": id}
 	}
 	var row []any
+	// A wrong title is fixed by saying which kind it is, then picking it
+	// from that app's search.
+	title := func() {
+		if ev.TitleFixable && ev.JobID != "" {
+			row = append(row, button(2, "It's a movie", "mr:title:movie:"+ev.JobID), button(2, "It's a TV show", "mr:title:tv:"+ev.JobID))
+		}
+	}
 	switch {
 	case ev.Type == "review" && ev.JobID != "":
 		row = []any{button(3, "Approve & import", "mr:approve:"+ev.JobID), button(4, "Discard", "mr:discard:"+ev.JobID)}
-	case ev.Type == "done" && ev.ImportFailed && ev.JobID != "":
-		row = []any{button(1, "Retry import", "mr:retry:"+ev.JobID)}
+		title()
+	case ev.Type == "done" && ev.JobID != "":
+		if ev.ImportFailed {
+			row = []any{button(1, "Retry import", "mr:retry:"+ev.JobID)}
+		}
+		title()
 	case ev.Type == "started" && ev.JobID != "":
 		row = []any{button(2, "Cancel", "mr:cancel:"+ev.JobID)}
+		title()
 	case ev.Type == "failed" && ev.Drive != "":
 		if ev.RetryDelivery && ev.JobID != "" {
 			row = append(row, button(1, "Retry delivery", "mr:redeliver:"+ev.JobID))

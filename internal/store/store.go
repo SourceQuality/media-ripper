@@ -64,8 +64,11 @@ type DiscMatch struct {
 	Episodes map[int]int `json:"episodes,omitempty"`
 	// Labels is what a person labelled every title of the disc (extras,
 	// trailers, cuts), kept as given.
-	Labels      json.RawMessage `json:"labels,omitempty"`
-	ConfirmedAt time.Time       `json:"confirmed_at"`
+	Labels json.RawMessage `json:"labels,omitempty"`
+	// Rerip: the correction needs titles that were not ripped, so the disc
+	// is ripped again when it goes back in, though it was ripped before.
+	Rerip       bool      `json:"rerip,omitempty"`
+	ConfirmedAt time.Time `json:"confirmed_at"`
 }
 
 // SeriesProgress remembers where the next disc of a season starts.
@@ -427,6 +430,21 @@ func (s *Store) SaveInventory(jobID string, inv DiscInventory) error {
 		return err
 	}
 	return atomicWrite(filepath.Join(dir, filepath.Base(jobID)+".json"), data)
+}
+
+// SaveScan keeps a job's disc scan (MakeMKV's titles, as JSON) in
+// scans/<job>.json, so its titles can be chosen again after the disc is out.
+func (s *Store) SaveScan(jobID string, data []byte) error {
+	dir := filepath.Join(s.dir, "scans")
+	if err := os.MkdirAll(dir, 0o775); err != nil {
+		return err
+	}
+	return atomicWrite(filepath.Join(dir, filepath.Base(jobID)+".json"), data)
+}
+
+// Scan reads a job's disc scan.
+func (s *Store) Scan(jobID string) ([]byte, error) {
+	return os.ReadFile(filepath.Join(s.dir, "scans", filepath.Base(jobID)+".json"))
 }
 
 // Inventory reads a job's disc inventory.
