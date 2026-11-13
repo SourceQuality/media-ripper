@@ -46,14 +46,17 @@ type Event struct {
 	ImportFailed bool `json:"import_failed,omitempty"`
 	// RetryDelivery marks a job whose rip is kept and can be delivered
 	// without the disc: its message offers that.
-	RetryDelivery bool      `json:"retry_delivery,omitempty"`
-	Warnings      []string  `json:"warnings,omitempty"`
-	Label         string    `json:"label,omitempty"`
-	Title         string    `json:"title,omitempty"`
-	Outputs       []string  `json:"outputs,omitempty"`
-	Error         string    `json:"error,omitempty"`
-	Elapsed       string    `json:"elapsed,omitempty"`
-	Time          time.Time `json:"time"`
+	RetryDelivery bool `json:"retry_delivery,omitempty"`
+	// TitleFixable marks a disc whose title a person can still correct:
+	// its message offers "Wrong title?".
+	TitleFixable bool      `json:"title_fixable,omitempty"`
+	Warnings     []string  `json:"warnings,omitempty"`
+	Label        string    `json:"label,omitempty"`
+	Title        string    `json:"title,omitempty"`
+	Outputs      []string  `json:"outputs,omitempty"`
+	Error        string    `json:"error,omitempty"`
+	Elapsed      string    `json:"elapsed,omitempty"`
+	Time         time.Time `json:"time"`
 }
 
 // Send delivers the event; failures are logged, never fatal.

@@ -206,7 +206,14 @@ func runDaemon(cfgPath string) error {
 		bot := &discordbot.Bot{Token: d.BotToken, AppID: d.ApplicationID, Allowed: d.AllowedUsers, Logger: log,
 			Handle: func(ctx context.Context, in discordbot.Interaction) string {
 				log.Info("discord button", "action", in.CustomID, "user", in.UserName)
-				return m.DiscordAction(ctx, in.CustomID)
+				return m.DiscordAction(ctx, in.CustomID, in.Values...)
+			},
+			// "It's a movie" / "It's a TV show": a search form, then a menu
+			// of what the search found.
+			Modal: func(in discordbot.Interaction) *discordbot.Modal { return m.DiscordModal(in.CustomID) },
+			Submit: func(ctx context.Context, in discordbot.Interaction) discordbot.Menu {
+				log.Info("discord search", "form", in.CustomID, "user", in.UserName)
+				return m.DiscordSearch(ctx, in.CustomID, in.Fields)
 			}}
 		go bot.Run(ctx)
 	}

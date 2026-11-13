@@ -172,6 +172,19 @@ func TestButtonsOnBotMessages(t *testing.T) {
 	if g := strings.Join(ids(6), ","); g != "mr:redeliver:j6" {
 		t.Fatalf("expiring buttons = %s", g)
 	}
+	// A disc whose title can still be corrected says which kind it is.
+	n.Send(context.Background(), Event{Type: "started", JobID: "j7", Title: "x", TitleFixable: true})
+	n.Send(context.Background(), Event{Type: "review", JobID: "j8", Title: "x", TitleFixable: true})
+	n.Send(context.Background(), Event{Type: "done", JobID: "j9", Title: "x", TitleFixable: true, ImportFailed: true})
+	if g := strings.Join(ids(7), ","); g != "mr:cancel:j7,mr:title:movie:j7,mr:title:tv:j7" {
+		t.Fatalf("started with title buttons = %s", g)
+	}
+	if g := strings.Join(ids(8), ","); g != "mr:approve:j8,mr:discard:j8,mr:title:movie:j8,mr:title:tv:j8" {
+		t.Fatalf("review with title buttons = %s", g)
+	}
+	if g := strings.Join(ids(9), ","); g != "mr:retry:j9,mr:title:movie:j9,mr:title:tv:j9" {
+		t.Fatalf("done with title buttons = %s", g)
+	}
 	// A webhook message cannot carry working buttons.
 	hook, hookGot := discordServer(t, 204)
 	(&Notifier{Discord: &Discord{WebhookURL: hook.URL, Buttons: true}}).Send(context.Background(), Event{Type: "review", JobID: "x", Title: "x"})

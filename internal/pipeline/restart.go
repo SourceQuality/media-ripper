@@ -217,6 +217,10 @@ func (m *Manager) completeOffline(ctx context.Context, job *Job, rs *resume, sna
 		m.fail(job, fmt.Errorf("%s not ripped before the restart; insert the disc again and rip it", strings.Join(missing, ", ")))
 		return
 	}
+	if !m.applyTitleChange(job) {
+		job.setStage(StageDone, "done")
+		return
+	}
 	if needsReview(job.Snapshot(), rt) {
 		m.holdForReview(job)
 		return

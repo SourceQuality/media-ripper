@@ -59,6 +59,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancel)
 	mux.HandleFunc("POST /api/jobs/{id}/retry-import", s.retryImport)
 	mux.HandleFunc("POST /api/jobs/{id}/retry-delivery", s.retryDelivery)
+	mux.HandleFunc("POST /api/jobs/{id}/title", s.correctTitle)
 	mux.HandleFunc("POST /api/drives/{drive}/eject", s.eject)
 	mux.HandleFunc("POST /api/drives/{drive}/rescan", s.rescan)
 	mux.HandleFunc("POST /api/drives/{drive}/next", s.nextDisc)
@@ -387,6 +388,24 @@ func (s *Server) approveReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, j)
+}
+
+// correctTitle corrects a disc's title (and kind) in whatever state it is:
+// running, held for review or done. Moving or importing can take minutes.
+func (s *Server) correctTitle(w http.ResponseWriter, r *http.Request) {
+	var e pipeline.ReviewEdit
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&e); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 20*time.Minute)
+	defer cancel()
+	j, msg, err := s.Manager.CorrectTitle(ctx, r.PathValue("id"), e)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"job": j, "message": msg})
 }
 
 // retryImport runs a finished disc's Radarr/Sonarr import again. It keeps

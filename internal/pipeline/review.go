@@ -86,6 +86,9 @@ type ReviewEdit struct {
 	TVDBID   int           `json:"tvdb_id"`
 	Season   int           `json:"season"`
 	Episodes map[int]int   `json:"episodes"`
+	// KeepExtras keeps the disc's extras that Episodes does not list, for a
+	// correction that only names the title.
+	KeepExtras bool `json:"-"`
 }
 
 var reviewMu sync.Mutex // one approval at a time: they rename shared staging
@@ -94,6 +97,16 @@ var reviewMu sync.Mutex // one approval at a time: they rename shared staging
 // staged files are renamed to the confirmed episodes, the import runs, and
 // the match is remembered for the next time this disc goes in.
 func (m *Manager) ApproveReview(ctx context.Context, id string, edit *ReviewEdit) (Job, error) {
+	return m.approveReview(ctx, id, func(job *Job) error {
+		if edit == nil {
+			return nil
+		}
+		return applyEdit(job, edit)
+	})
+}
+
+// approveReview imports a held job after change has corrected it.
+func (m *Manager) approveReview(ctx context.Context, id string, change func(job *Job) error) (Job, error) {
 	reviewMu.Lock()
 	defer reviewMu.Unlock()
 	raw, ok := m.deps.Store.Review(id)
@@ -108,10 +121,8 @@ func (m *Manager) ApproveReview(ctx context.Context, id string, edit *ReviewEdit
 	job := new(Job)
 	*job = snap
 	job.mu, job.rt = &sync.Mutex{}, rt
-	if edit != nil {
-		if err := applyEdit(job, edit); err != nil {
-			return Job{}, err
-		}
+	if err := change(job); err != nil {
+		return Job{}, err
 	}
 	job.set(func(j *Job) {
 		if j.Identity != nil {
@@ -120,7 +131,8 @@ func (m *Manager) ApproveReview(ctx context.Context, id string, edit *ReviewEdit
 			j.Identity = &id
 		}
 	})
-	if err := m.restage(job); err != nil {
+	setNextEpisode(job)
+	if err := m.restage(job, false); err != nil {
 		return Job{}, err
 	}
 	job.logf("approved by a person")
@@ -146,6 +158,7 @@ func (m *Manager) ApproveReview(ctx context.Context, id string, edit *ReviewEdit
 		m.log.Warn("write history", "err", err)
 	}
 	_ = m.deps.Store.DeleteReview(id)
+	m.refreshRecent(s)
 	ev := m.event(job, "done")
 	ev.Elapsed, ev.Error = s.Elapsed, strings.Join(s.Warnings, "; ")
 	for _, o := range s.Outputs {
@@ -194,6 +207,10 @@ func applyEdit(job *Job, e *ReviewEdit) error {
 	var picks []selector.Pick
 	for _, p := range job.Selection.Picks {
 		ep, keep := e.Episodes[p.Title.ID]
+		if !keep && e.KeepExtras && p.Extra != "" {
+			picks = append(picks, p)
+			continue
+		}
 		if !keep {
 			sel.Skipped = append(sel.Skipped, selector.Skipped{TitleID: p.Title.ID, Duration: p.Title.Duration, Reason: "left out by a person"})
 			continue
@@ -229,8 +246,18 @@ func episodeName(id *metadata.Identity, ep int) string {
 }
 
 // restage renames the job's staged files to what its picks now say and
-// drops outputs of titles that were left out (their files stay put).
-func (m *Manager) restage(job *Job) error {
+// drops outputs of titles that were left out (their files stay put). On an
+// error the files it renamed get their names back. keepWarnings keeps the
+// job's warnings; otherwise they go, as for a new import.
+func (m *Manager) restage(job *Job, keepWarnings bool) (err error) {
+	var undo [][2]string
+	defer func() {
+		if err != nil {
+			for i := len(undo) - 1; i >= 0; i-- {
+				_ = os.Rename(undo[i][1], undo[i][0])
+			}
+		}
+	}()
 	s := job.Snapshot()
 	cfg := job.rt.cfg
 	bluray := strings.Contains(strings.ToLower(s.DiscType), "blu-ray")
@@ -259,6 +286,7 @@ func (m *Manager) restage(job *Job) error {
 			if err := os.Rename(o.Path, dest); err != nil {
 				return fmt.Errorf("rename %s: %w", filepath.Base(o.Path), err)
 			}
+			undo = append(undo, [2]string{o.Path, dest})
 			job.logf("renamed %s → %s", filepath.Base(o.Path), filepath.Base(dest))
 			o.Path = dest
 		}
@@ -268,7 +296,12 @@ func (m *Manager) restage(job *Job) error {
 	if len(outs) == 0 {
 		return errors.New("no delivered files left to import")
 	}
-	job.set(func(j *Job) { j.Outputs, j.Warnings = outs, nil })
+	job.set(func(j *Job) {
+		j.Outputs = outs
+		if !keepWarnings {
+			j.Warnings = nil
+		}
+	})
 	return nil
 }
 
@@ -340,14 +373,24 @@ func (m *Manager) Lookup(ctx context.Context, kind metadata.Kind, q string) ([]L
 }
 
 // DiscordAction carries out a button pressed on a Discord message
-// ("mr:<action>:<argument>") and says what happened, for the message.
-func (m *Manager) DiscordAction(ctx context.Context, customID string) string {
+// ("mr:<action>:<argument>"), or an option picked in a menu (values), and
+// says what happened, for the message.
+func (m *Manager) DiscordAction(ctx context.Context, customID string, values ...string) string {
 	parts := strings.SplitN(customID, ":", 3)
 	if len(parts) != 3 || parts[0] != "mr" {
 		return "Unknown button"
 	}
 	action, arg := parts[1], parts[2]
 	switch action {
+	case "title":
+		// The form opens instead (DiscordModal); this is a disc it cannot
+		// be offered for.
+		return m.titleUnavailable(arg)
+	case "titlepick":
+		if len(values) == 0 {
+			return "Nothing was picked"
+		}
+		return m.discordPickTitle(ctx, arg, values[0])
 	case "approve":
 		j, err := m.ApproveReview(ctx, arg, nil)
 		if err != nil {

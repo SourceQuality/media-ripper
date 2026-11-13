@@ -115,7 +115,9 @@ type Item struct {
 	Runtime time.Duration
 	Seasons []Season
 	Path    string
-	raw     map[string]any
+	// Monitored: the app looks for (better) releases of it.
+	Monitored bool
+	raw       map[string]any
 }
 
 // Season is a season summary from a Sonarr lookup.
@@ -141,6 +143,7 @@ func parseItem(raw map[string]any) Item {
 	it.Year = int(num(raw["year"]))
 	it.Runtime = time.Duration(num(raw["runtime"])) * time.Minute
 	it.Path, _ = raw["path"].(string)
+	it.Monitored, _ = raw["monitored"].(bool)
 	if seasons, ok := raw["seasons"].([]any); ok {
 		for _, s := range seasons {
 			sm, _ := s.(map[string]any)
@@ -486,6 +489,130 @@ func (c *Client) Holds(ctx context.Context, itemID int) (map[int64]bool, error) 
 		out[f.Size] = true
 	}
 	return out, nil
+}
+
+// File is one file the app holds for a movie.
+type File struct {
+	ID   int
+	Path string // as the app sees it
+	Size int64
+}
+
+// MovieFiles lists the files Radarr holds for a movie.
+func (c *Client) MovieFiles(ctx context.Context, movieID int) ([]File, error) {
+	if c.Kind != Radarr {
+		return nil, errors.New("movie files are Radarr's")
+	}
+	var raw []struct {
+		ID   int    `json:"id"`
+		Path string `json:"path"`
+		Size int64  `json:"size"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/moviefile", url.Values{"movieId": {strconv.Itoa(movieID)}}, nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]File, 0, len(raw))
+	for _, f := range raw {
+		out = append(out, File{ID: f.ID, Path: f.Path, Size: f.Size})
+	}
+	return out, nil
+}
+
+// Folder is what the app sees in a folder: the names of its subfolders and
+// its files.
+type Folder struct {
+	Dirs  []string
+	Files []File
+}
+
+// ListFolder lists a folder as the app sees it, through the file browser
+// its own UI uses (/filesystem).
+func (c *Client) ListFolder(ctx context.Context, path string) (Folder, error) {
+	var raw struct {
+		Directories []struct {
+			Name string `json:"name"`
+		} `json:"directories"`
+		Files []struct {
+			Path string `json:"path"`
+			Size int64  `json:"size"`
+		} `json:"files"`
+	}
+	q := url.Values{"path": {path}, "includeFiles": {"true"}, "allowFoldersWithoutTrailingSlashes": {"true"}}
+	if err := c.do(ctx, http.MethodGet, "/filesystem", q, nil, &raw); err != nil {
+		return Folder{}, err
+	}
+	var f Folder
+	for _, d := range raw.Directories {
+		f.Dirs = append(f.Dirs, d.Name)
+	}
+	for _, x := range raw.Files {
+		f.Files = append(f.Files, File{Path: x.Path, Size: x.Size})
+	}
+	return f, nil
+}
+
+// Remove takes a movie or series out of the library and leaves its files
+// on disk.
+func (c *Client) Remove(ctx context.Context, itemID int) error {
+	path := "/movie/"
+	q := url.Values{"deleteFiles": {"false"}, "addImportExclusion": {"false"}}
+	if c.Kind == Sonarr {
+		path = "/series/"
+		q.Del("addImportExclusion")
+	}
+	return c.do(ctx, http.MethodDelete, path+strconv.Itoa(itemID), q, nil, nil)
+}
+
+// ImportInto has Radarr move the video file of the given size in a folder,
+// given as the app sees it, into one movie: the preview is matched against
+// that movie rather than guessed from the file name, and any other file in
+// the folder is left where it is.
+func (c *Client) ImportInto(ctx context.Context, folder string, movieID int, size int64, opts ImportOptions) (ImportResult, error) {
+	res := ImportResult{Rejected: map[string][]string{}, ItemID: movieID}
+	if c.Kind != Radarr {
+		return res, errors.New("only Radarr imports into a chosen movie here")
+	}
+	var preview []map[string]any
+	q := url.Values{"folder": {folder}, "movieId": {strconv.Itoa(movieID)}, "filterExistingFiles": {"true"}}
+	if err := c.do(ctx, http.MethodGet, "/manualimport", q, nil, &preview); err != nil {
+		return res, err
+	}
+	quality, err := c.qualityByName(ctx, opts.Quality)
+	if err != nil {
+		return res, err
+	}
+	var files []map[string]any
+	for _, p := range preview {
+		path, _ := p["path"].(string)
+		name := filepath.Base(filepath.FromSlash(strings.ReplaceAll(path, "\\", "/")))
+		if int64(num(p["size"])) != size {
+			continue
+		}
+		if reasons := rejections(p); len(reasons) > 0 {
+			res.Rejected[name] = reasons
+			continue
+		}
+		f := map[string]any{"path": path, "movieId": movieID, "languages": p["languages"], "releaseGroup": p["releaseGroup"], "indexerFlags": p["indexerFlags"], "quality": p["quality"]}
+		if quality != nil {
+			f["quality"] = quality
+		}
+		files = append(files, f)
+	}
+	if len(files) == 0 {
+		if len(res.Rejected) == 0 {
+			return res, fmt.Errorf("%s found no video file of %d bytes in %s", c.Kind, size, folder)
+		}
+		return res, fmt.Errorf("%s would not take the file: %s", c.Kind, describeRejected(res.Rejected))
+	}
+	cmd, err := c.runCommand(ctx, map[string]any{"name": "ManualImport", "files": files, "importMode": "move"}, opts.Wait)
+	if err != nil {
+		return res, err
+	}
+	if strings.EqualFold(cmd.Result, "unsuccessful") {
+		return res, fmt.Errorf("%s: import %s", c.Kind, firstNonEmpty(cmd.Message, "unsuccessful"))
+	}
+	res.Imported = len(files)
+	return res, nil
 }
 
 type command struct {

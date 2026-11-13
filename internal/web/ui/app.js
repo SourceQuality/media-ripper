@@ -19,6 +19,7 @@
       btn.disabled = true; btn.textContent = 'Delivering…';
       post(`/api/jobs/${encodeURIComponent(id)}/retry-delivery`);
     },
+    title: id => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(openTitle),
     detail: id => fetch(`/api/jobs/${encodeURIComponent(id)}`).then(r => r.json()).then(j => {
       $('#detail-title').textContent = jobTitle(j);
       $('#detail-log').textContent = (j.log || []).length
@@ -28,6 +29,73 @@
     }),
   };
   $('#detail-close').onclick = () => $('#detail').close();
+
+  // "Wrong title?": say whether it is a movie or a TV show, search that app
+  // (Radarr or Sonarr) and pick. Switching the kind searches the other app
+  // with the same text. A dialog, so the 2-second refresh leaves it alone.
+  const titleDialog = (() => {
+    const d = document.createElement('dialog');
+    d.id = 'title-dialog';
+    d.innerHTML = `<h3>Change the title</h3>
+      <div class="sub muted tcur"></div>
+      <div class="form">
+        <span class="kinds"><label><input type="radio" name="tkind" value="movie"> Movie</label> <label><input type="radio" name="tkind" value="tv"> TV show</label></span>
+        <label class="grow">Search <input class="tq"></label>
+        <label class="ts-l">Season <input class="ts" type="number" min="1" value="1"></label>
+        <button type="button" class="tgo">Search</button>
+      </div>
+      <div class="results tres"></div>
+      <div class="sub muted thelp"></div>
+      <div class="row end"><span class="status tstatus muted"></span><button type="button" class="tclose">Close</button></div>`;
+    document.body.appendChild(d);
+    d.querySelector('.tclose').onclick = () => d.close();
+    return d;
+  })();
+  const openTitle = j => {
+    const d = titleDialog, q = s => d.querySelector(s);
+    const id = j.identity || {};
+    const kind = () => (d.querySelector('input[name="tkind"]:checked') || {}).value || 'movie';
+    q('.tcur').textContent = `Now: ${id.kind === 'tv' || id.kind === 'movie' ? (id.kind === 'tv' ? 'TV · ' : 'Movie · ') + jobTitle(j) : 'not identified (' + (j.label || 'no label') + ')'}`;
+    d.querySelector(`input[name="tkind"][value="${id.kind === 'tv' ? 'tv' : 'movie'}"]`).checked = true;
+    q('.tq').value = id.title || j.label || '';
+    q('.ts').value = id.kind === 'tv' && id.season ? id.season : 1;
+    q('.tres').innerHTML = ''; q('.tstatus').textContent = '';
+    const show = () => {
+      q('.ts-l').classList.toggle('hidden', kind() !== 'tv');
+      q('.thelp').textContent = kind() === 'tv'
+        ? 'Episodes are numbered in playback order from where that season stopped. To set them one by one, use Review.'
+        : 'The main feature (the longest title) is kept.';
+    };
+    const search = () => {
+      show();
+      const out = q('.tres');
+      if (!q('.tq').value.trim()) { out.textContent = 'Type a title to search for'; return; }
+      out.textContent = `Searching ${kind() === 'tv' ? 'Sonarr' : 'Radarr'}…`;
+      fetch(`/api/lookup?kind=${kind()}&q=${encodeURIComponent(q('.tq').value)}`).then(async r => { const x = await r.json(); if (!r.ok) throw new Error(x.error); return x; })
+        .then(list => {
+          const what = kind() === 'tv' ? 'TV' : 'Movie';
+          out.innerHTML = list.length ? list.map((x, i) => `<button type="button" data-i="${i}">${esc(what)} · ${esc(x.title)}${x.year ? ' (' + x.year + ')' : ''}</button>`).join('') : 'Nothing found';
+          out.querySelectorAll('button').forEach(b => b.onclick = () => pick(list[+b.dataset.i]));
+        }).catch(e => { out.textContent = e.message; });
+    };
+    const pick = x => {
+      const edit = { kind: kind(), title: x.title, year: x.year || 0, tmdb_id: x.tmdb_id || 0, tvdb_id: x.tvdb_id || 0,
+        season: kind() === 'tv' ? parseInt(q('.ts').value, 10) || 0 : 0 };
+      d.querySelectorAll('button').forEach(b => b.disabled = true);
+      q('.tstatus').textContent = 'Changing… (an import can take a minute)';
+      fetch(`/api/jobs/${encodeURIComponent(j.id)}/title`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(edit) })
+        .then(async r => { const x = await r.json(); if (!r.ok) throw new Error(x.error); return x; })
+        .then(x => { q('.tstatus').textContent = x.message || 'Done'; q('.tres').innerHTML = ''; reviewKey = null; refresh(); })
+        .catch(e => { q('.tstatus').textContent = e.message; })
+        .finally(() => d.querySelectorAll('button').forEach(b => b.disabled = false));
+    };
+    d.querySelectorAll('input[name="tkind"]').forEach(r => r.onchange = search);
+    q('.tgo').onclick = search;
+    q('.tq').onkeydown = ev => { if (ev.key === 'Enter') { ev.preventDefault(); search(); } };
+    show();
+    d.showModal();
+    search();
+  };
 
   // From the saved history (a job from before a restart): the outcome
   // without the step-by-step log.
@@ -117,7 +185,8 @@
       const pct = j.stage === 'ripping' && j.progress >= 0 ? j.overall
         : ['postprocessing', 'delivering'].includes(j.stage) && j.total ? (j.outputs || []).length / j.total * 100 : -1;
       body = `<div class="row"><span class="title">${esc(jobTitle(j))}</span><span class="stage">${esc(stageText(j))}</span><span class="spacer"></span>
-        ${j.stage === 'labelling' ? `<a class="btn primary" href="history.html#${encodeURIComponent(j.id)}">Label titles</a>` : `<a class="btn" href="history.html#${encodeURIComponent(j.id)}">Disc details</a>`}<button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
+        ${j.stage === 'labelling' ? `<a class="btn primary" href="history.html#${encodeURIComponent(j.id)}">Label titles</a>` : `<a class="btn" href="history.html#${encodeURIComponent(j.id)}">Disc details</a>`}${!j.contribute && j.stage !== 'labelling' ? `<button onclick="act.title('${esc(j.id)}')">Wrong title?</button>` : ''}<button class="danger" onclick="act.cancel('${esc(j.id)}')">Cancel</button></div>
+        ${j.pending_title ? `<div class="sub">Will be imported as ${esc(j.pending_title)} once the copying is done.</div>` : ''}
         ${j.verification ? `<div class="sub muted verify">${esc(j.verification)}</div>` : ''}
         <div class="bar ${pct < 0 ? 'indeterminate' : ''}"><div style="width:${pct < 0 ? 0 : pct}%"></div></div>
         ${j.contribute ? '<div class="sub muted">TheDiscDB only: kept for contributing, not ripped.</div>'
@@ -240,7 +309,7 @@
       ${skipped ? `<div class="sub muted">${esc(skipped)}</div>` : ''}
       ${j.backup ? `<div class="sub muted">Full-disc backup: ${esc(j.backup.path)} (${esc(fmtBytes(j.backup.size))})</div>` : ''}
       ${warnings}
-      <div class="row end">${j.retry_delivery ? `<button class="primary" onclick="act.redeliver('${esc(j.id)}', this)">Retry delivery</button>` : ''}${importFailed(j) ? `<button class="primary" onclick="act.retry('${esc(j.id)}', this)">Retry import</button>` : ''}<button onclick="act.detail('${esc(j.id)}')">Details</button></div>
+      <div class="row end">${j.retry_delivery ? `<button class="primary" onclick="act.redeliver('${esc(j.id)}', this)">Retry delivery</button>` : ''}${importFailed(j) ? `<button class="primary" onclick="act.retry('${esc(j.id)}', this)">Retry import</button>` : ''}${j.stage === 'done' && !j.contribute && (j.outputs || []).length ? `<button onclick="act.title('${esc(j.id)}')">Wrong title?</button>` : ''}<button onclick="act.detail('${esc(j.id)}')">Details</button></div>
     </div>`;
   };
 
@@ -308,13 +377,16 @@
     const kind = () => q('.kind').value;
     q('.kind').onchange = () => {
       card.querySelectorAll('.ep, .season-l').forEach(el => el.classList.toggle('hidden', kind() !== 'tv'));
+      // The other kind is the other app: search it with the same text.
+      card.dataset.tmdb = ''; card.dataset.tvdb = '';
+      if (q('.title-in').value.trim()) q('.search').click();
     };
     q('.search').onclick = () => {
       const out = q('.results');
       out.textContent = 'Searching…';
       fetch(`/api/lookup?kind=${kind()}&q=${encodeURIComponent(q('.title-in').value)}`).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; })
         .then(list => {
-          out.innerHTML = list.length ? list.map((x, i) => `<button type="button" data-i="${i}">${esc(x.title)}${x.year ? ' (' + x.year + ')' : ''}</button>`).join('') : 'Nothing found';
+          out.innerHTML = list.length ? list.map((x, i) => `<button type="button" data-i="${i}">${kind() === 'tv' ? 'TV' : 'Movie'} · ${esc(x.title)}${x.year ? ' (' + x.year + ')' : ''}</button>`).join('') : 'Nothing found';
           out.querySelectorAll('button').forEach(b => b.onclick = () => {
             const x = list[+b.dataset.i];
             q('.title-in').value = x.title; q('.year').value = x.year || '';

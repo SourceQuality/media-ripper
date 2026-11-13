@@ -146,6 +146,27 @@ or `owner_webhook_url`: technical events and failure details go there, and
 the main channel gets plain messages like "Ready for the next disc" and "Put
 this disc back in". The JSON webhook and ntfy still get every event.
 
+**A wrong title** is fixed from the disc's Discord message (**It's a movie**
+or **It's a TV show**, then pick it from Radarr's or Sonarr's search) or with
+**Wrong title?** on its card in the web UI, which has the same switch. It
+works while the disc rips (the files are renamed and imported as corrected
+once the copying is done), while it waits for review, and after it is done:
+files the app did not take are imported again, and a movie Radarr took is
+moved to the right movie, but only when the wrong entry is one media-ripper
+added for this disc (unmonitored, holding only this disc's files). Episodes
+Sonarr took are left to Sonarr unless the disc turns out to be a movie.
+
+Switching between movie and TV, or naming an unidentified disc, chooses the
+titles again by the usual rules: the main feature for a movie, the
+episode-length titles in playback order from where the season stopped for TV
+(set them one by one in **Review** if that is wrong). When those titles were
+not ripped, a disc still in the drive is ripped again straight away, reusing
+what was ripped; a disc already out is ripped as corrected the next time it
+goes in, though it was ripped before. A wrong movie or series that
+media-ripper added for the disc is taken out of Radarr or Sonarr (its files
+stay on disk). The correction is remembered, so the disc is not misidentified
+again.
+
 **Extras** (manual mode) are not Radarr's or Sonarr's to import: they are
 kept in `_incoming/_extras/` until the movie or show is imported, then
 moved into its library folder, in the subfolders Plex and Jellyfin read

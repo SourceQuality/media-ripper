@@ -123,8 +123,21 @@ type Job struct {
 	// Activities are the steps moving data right now. A rip and the
 	// delivery of an earlier title can run at the same time.
 	Activities []Activity `json:"activities,omitempty"`
+	// PendingTitle is a person's correction waiting to be applied when the
+	// copying is done ("The Matrix (1999)").
+	PendingTitle string `json:"pending_title,omitempty"`
 
 	cancel func()
+	// titleChange is that correction; titleFixed is set once the titles are
+	// final (the import has started), after which a correction is a re-import.
+	titleChange *ReviewEdit
+	titleFixed  bool
+	// reripLeft: a correction needs the disc ripped again; this job's files
+	// were not imported, and the disc still is to be ripped as corrected.
+	reripLeft bool
+	// restarting: cancelled to be ripped again under a correction, which is
+	// no failure to report.
+	restarting bool
 	// discFiles is the disc's file inventory, saved with the job for the
 	// disc manifest; not part of the snapshot (it can be long).
 	discFiles []udf.File
@@ -308,6 +321,7 @@ func (j *Job) Snapshot() Job {
 		StartedAt: j.StartedAt, FinishedAt: j.FinishedAt, Elapsed: j.Elapsed, DryRun: j.DryRun, Contribute: j.Contribute, Manual: j.Manual,
 		Identity: j.Identity, Selection: j.Selection, Error: j.Error, Current: j.Current, Total: j.Total, Ejected: j.Ejected, Catalog: j.Catalog, CatalogDisc: j.CatalogDisc, Backup: j.Backup,
 		CatalogMatched: j.CatalogMatched, CatalogCompared: j.CatalogCompared, ContentHash: j.ContentHash, HashMatched: j.HashMatched,
+		PendingTitle: j.PendingTitle,
 	}
 	c.Warnings = append([]string(nil), j.Warnings...)
 	c.Activities = append([]Activity(nil), j.Activities...)
