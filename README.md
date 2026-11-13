@@ -120,7 +120,11 @@ the library yet it is added first (unmonitored by default) using
 container or machine, `path_map` translates this machine's paths into what
 Radarr sees (and back). If an import fails or is cut short by a restart,
 the files stay in `_incoming/`, the job offers **Retry import**, and an
-interrupted import runs again at the next start.
+interrupted import runs again at the next start. An import that fails
+because the app did not answer (busy, restarting, unreachable) is tried
+again by itself: twice within a few minutes, then quietly about 10 minutes,
+an hour and six hours later; only a success is announced. A refusal, such as
+"not an upgrade", is left for you.
 
 If copying a finished rip fails (the share was unreachable, say), the rip is
 kept in the workspace and the disc is not needed again. The job runs again

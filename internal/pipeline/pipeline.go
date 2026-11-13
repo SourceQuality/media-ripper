@@ -243,11 +243,15 @@ func (m *Manager) Run(ctx context.Context) error {
 	m.cleanWorkspace()
 
 	var wg sync.WaitGroup
-	wg.Add(6)
+	wg.Add(7)
 	go func() {
 		defer wg.Done()
 		<-ctx.Done()
 		m.savePausedJobs()
+	}()
+	go func() {
+		defer wg.Done()
+		m.watchFailedImports(ctx)
 	}()
 	go func() {
 		defer wg.Done()

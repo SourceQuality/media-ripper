@@ -2,11 +2,13 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // importFailed reports whether a finished job left files that Radarr or
@@ -26,6 +28,12 @@ func importFailed(s Job) bool {
 // RetryImport runs the Radarr/Sonarr import of a finished job again, for
 // files that a failed or interrupted import left in staging.
 func (m *Manager) RetryImport(ctx context.Context, id string) (Job, error) {
+	return m.retryImport(ctx, id, true)
+}
+
+// retryImport runs a finished disc's import again. A failure is announced
+// only when announce is set: background retries stay quiet until they work.
+func (m *Manager) retryImport(ctx context.Context, id string, announce bool) (Job, error) {
 	reviewMu.Lock() // imports and approvals share the staging area
 	defer reviewMu.Unlock()
 	rt := m.rt.Load()
@@ -76,6 +84,9 @@ func (m *Manager) RetryImport(ctx context.Context, id string) (Job, error) {
 	if err := m.deps.Store.AppendHistory(historyRecord(s)); err != nil {
 		m.log.Warn("write history", "err", err)
 	}
+	if !announce && importFailed(s) {
+		return s, nil
+	}
 	ev := m.event(job, "done")
 	ev.Elapsed, ev.Error, ev.ImportFailed = s.Elapsed, strings.Join(s.Warnings, "; "), importFailed(s)
 	for _, o := range s.Outputs {
@@ -83,6 +94,84 @@ func (m *Manager) RetryImport(ctx context.Context, id string) (Job, error) {
 	}
 	rt.notifier.Send(context.WithoutCancel(ctx), ev)
 	return s, nil
+}
+
+// An import that failed because the app did not answer is tried again in
+// the background, a few times, further apart each time; nobody has to press
+// Retry import for an app that was only busy.
+var (
+	importRetryAfter = []time.Duration{10 * time.Minute, time.Hour, 6 * time.Hour}
+	importRetryEvery = 5 * time.Minute
+)
+
+func (m *Manager) watchFailedImports(ctx context.Context) {
+	tried := map[string]int{}
+	t := time.NewTicker(importRetryEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		m.retryFailedImports(ctx, tried, time.Now())
+	}
+}
+
+// retryFailedImports retries the imports that are due; tried counts the
+// attempts per job.
+func (m *Manager) retryFailedImports(ctx context.Context, tried map[string]int, now time.Time) {
+	h, err := m.deps.Store.History(0)
+	if err != nil {
+		return
+	}
+	latest := map[string]Job{}
+	var order []string
+	for _, raw := range h {
+		var j Job
+		if json.Unmarshal(raw, &j) != nil {
+			continue
+		}
+		if _, seen := latest[j.ID]; !seen {
+			order = append(order, j.ID)
+		}
+		latest[j.ID] = j
+	}
+	for _, id := range order {
+		j := latest[id]
+		n := tried[id]
+		if ctx.Err() != nil || !importFailed(j) || !transientFailure(j) || n >= len(importRetryAfter) || now.Sub(j.FinishedAt) < importRetryAfter[n] {
+			continue
+		}
+		if live := m.recentJob(id); live != nil && !live.Snapshot().Stage.Terminal() {
+			continue
+		}
+		tried[id] = n + 1
+		r, err := m.retryImport(ctx, id, false)
+		switch {
+		case err != nil:
+			m.log.Warn("retry import", "job", id, "try", n+1, "err", err)
+		case importFailed(r):
+			m.log.Info("import still failing; trying again later", "job", id, "try", n+1)
+		default:
+			m.log.Info("import retried in the background", "job", id, "title", displayTitleSnap(r))
+		}
+	}
+}
+
+// transientFailure reports whether a job's failed imports all failed for a
+// passing reason.
+func transientFailure(j Job) bool {
+	any := false
+	for _, o := range j.Outputs {
+		if strings.HasPrefix(o.Import, "not imported") {
+			if !transientImport(o.Import) {
+				return false
+			}
+			any = true
+		}
+	}
+	return any
 }
 
 func hasBlurayTitles(j Job) bool {

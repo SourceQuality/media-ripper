@@ -22,6 +22,8 @@ func TestMain(m *testing.M) {
 	// Most failures here have nothing to do with the drive; no need to wait.
 	driveWatchEvery, driveFailGrace, ejectRetryEvery = 10*time.Millisecond, 300*time.Millisecond, 10*time.Millisecond
 	driveLostAfter = 50 * time.Millisecond
+	// An app that fails an import is retried at once, not after minutes.
+	handoffRetryWaits = []time.Duration{time.Millisecond, time.Millisecond}
 	code := m.Run()
 	os.RemoveAll(home)
 	os.Exit(code)

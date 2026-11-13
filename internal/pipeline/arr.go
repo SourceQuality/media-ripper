@@ -54,6 +54,15 @@ func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 		m.log.Warn("mark import pending", "job", job.ID, "err", err)
 	}
 	err := m.doHandoff(ctx, job, client, s)
+	for i := 0; err != nil && ctx.Err() == nil && transientImport(err.Error()) && i < len(handoffRetryWaits); i++ {
+		wait := handoffRetryWaits[i]
+		job.logf("%s: %v; trying again in %s", client.Kind, err, wait)
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+			err = m.doHandoff(ctx, job, client, job.Snapshot())
+		}
+	}
 	if err != nil && ctx.Err() != nil {
 		job.logf("%s import interrupted; it runs again when media-ripper starts", client.Kind)
 		job.warn(fmt.Sprintf("%s import interrupted; it runs again when media-ripper starts", client.Kind))
@@ -78,6 +87,24 @@ func (m *Manager) arrHandoff(ctx context.Context, job *Job) {
 		return
 	}
 	job.logf("%s import complete", client.Kind)
+}
+
+// handoffRetryWaits are the pauses before an import that failed for a
+// passing reason, such as a busy or restarting app, is tried again.
+var handoffRetryWaits = []time.Duration{30 * time.Second, 2 * time.Minute}
+
+// transientImport reports whether an import error is worth trying again:
+// the app did not answer, or answered that it could not right now. A
+// refusal (not an upgrade, nothing matched) is not.
+func transientImport(msg string) bool {
+	msg = strings.ToLower(msg)
+	for _, s := range []string{"deadline exceeded", "timeout", "connection refused", "connection reset",
+		"no such host", "eof", "http 500", "http 502", "http 503", "http 504"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) doHandoff(ctx context.Context, job *Job, client *arr.Client, s Job) error {
