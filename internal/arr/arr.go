@@ -31,10 +31,14 @@ const (
 
 // Client is one Radarr or Sonarr instance.
 type Client struct {
-	Kind   Kind
-	Cfg    config.ArrApp
-	HTTP   *http.Client
-	Logger *slog.Logger
+	Kind Kind
+	Cfg  config.ArrApp
+	HTTP *http.Client
+	// WriteTimeout bounds requests that change something (adding a title,
+	// starting an import), which a busy app can take minutes over. Reads
+	// keep HTTP's shorter timeout, so a dead app is noticed quickly.
+	WriteTimeout time.Duration
+	Logger       *slog.Logger
 	// Poll is how often a running command is re-checked (default 3s).
 	Poll time.Duration
 }
@@ -47,7 +51,7 @@ func New(kind Kind, cfg config.ArrApp, timeout time.Duration, log *slog.Logger) 
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
-	return &Client{Kind: kind, Cfg: cfg, HTTP: &http.Client{Timeout: timeout}, Logger: log}
+	return &Client{Kind: kind, Cfg: cfg, HTTP: &http.Client{Timeout: timeout}, WriteTimeout: max(timeout, 5*time.Minute), Logger: log}
 }
 
 func (c *Client) do(ctx context.Context, method, path string, q url.Values, body any, out any) error {
@@ -72,7 +76,13 @@ func (c *Client) do(ctx context.Context, method, path string, q url.Values, body
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.HTTP.Do(req)
+	client := c.HTTP
+	if method != http.MethodGet && c.WriteTimeout > client.Timeout && client.Timeout > 0 {
+		slow := *client
+		slow.Timeout = c.WriteTimeout
+		client = &slow
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s: %w", c.Kind, err)
 	}

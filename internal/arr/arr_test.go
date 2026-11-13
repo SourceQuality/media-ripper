@@ -201,3 +201,24 @@ func TestLocalPathUndoesTheMap(t *testing.T) {
 		}
 	}
 }
+
+// Adding a title can take a busy app minutes; reads stay quick to fail.
+func TestWritesGetLongerTimeout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+	c := New(Radarr, config.ArrApp{Enabled: true, URL: srv.URL, APIKey: "k"}, 50*time.Millisecond, nil)
+	if c.WriteTimeout < 5*time.Minute {
+		t.Fatalf("write timeout = %s", c.WriteTimeout)
+	}
+	c.WriteTimeout = 2 * time.Second
+	if err := c.do(context.Background(), http.MethodGet, "/system/status", nil, nil, nil); err == nil {
+		t.Fatal("a slow read should time out")
+	}
+	if err := c.do(context.Background(), http.MethodPost, "/command", nil, map[string]any{}, nil); err != nil {
+		t.Fatalf("a slow write should wait: %v", err)
+	}
+}
