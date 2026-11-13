@@ -43,6 +43,10 @@ type Deps struct {
 	Logger   *slog.Logger
 	// OpenDrive lets tests substitute a fake drive.
 	OpenDrive func(path string) (drive.Drive, error)
+	// Discover lists the drives present and Port says where one is
+	// attached (tests substitute both).
+	Discover func() []string
+	Port     func(path string) string
 	// OCRTools overrides the ffmpeg and tesseract binaries (tests).
 	OCRTools []string
 	// Catalog replaces TheDiscDB (tests).
@@ -126,6 +130,12 @@ func New(deps Deps) *Manager {
 	}
 	if deps.OpenDrive == nil {
 		deps.OpenDrive = drive.Open
+	}
+	if deps.Discover == nil {
+		deps.Discover = drive.Discover
+	}
+	if deps.Port == nil {
+		deps.Port = drive.Port
 	}
 	m := &Manager{deps: deps, log: deps.Logger, started: time.Now(), deliverSlot: make(chan struct{}, 1)}
 	m.live = &notify.LiveMessages{File: filepath.Join(deps.Config.StateDir(), "discord-messages.json")}
@@ -230,7 +240,7 @@ func (m *Manager) Run(ctx context.Context) error {
 	cfg := m.Config()
 	paths := cfg.Drives
 	if len(paths) == 0 {
-		paths = drive.Discover()
+		paths = m.deps.Discover()
 	}
 	if len(paths) == 0 {
 		m.log.Warn("no optical drives found; waiting for one to appear")
@@ -280,14 +290,16 @@ func (m *Manager) Run(ctx context.Context) error {
 			return
 		}
 		seen[p] = true
-		r := &runner{m: m, path: p, log: m.log.With("drive", p)}
+		rctx, stop := context.WithCancel(ctx)
+		r := &runner{m: m, path: p, port: m.deps.Port(p), stop: stop, log: m.log.With("drive", p)}
 		m.mu.Lock()
 		m.runners = append(m.runners, r)
 		m.mu.Unlock()
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r.loop(ctx)
+			defer stop()
+			r.loop(rctx)
 		}()
 	}
 	for _, p := range paths {
@@ -298,18 +310,24 @@ func (m *Manager) Run(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			t := time.NewTicker(15 * time.Second)
+			t := time.NewTicker(hotplugEvery)
 			defer t.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
 				case <-t.C:
-					for _, p := range drive.Discover() {
+					for _, p := range m.deps.Discover() {
 						if !seen[p] {
 							m.log.Info("new drive", "drive", p)
 							startRunner(p)
 						}
+					}
+					for _, r := range m.ghostRunners() {
+						m.log.Info("drive came back under another name; no longer watching the old one", "old", r.path, "port", r.port)
+						r.stop()
+						m.dropRunner(r)
+						delete(seen, r.path)
 					}
 				}
 			}
@@ -500,6 +518,10 @@ type runner struct {
 	// the job ejects part-way through.
 	drv   drive.Drive
 	model string
+	// port is where the drive is attached (drive.Port); stop ends this
+	// runner when its drive has come back under another name.
+	port string
+	stop context.CancelFunc
 }
 
 func (r *runner) current() *Job {

@@ -143,3 +143,30 @@ func TestModelFromSysfs(t *testing.T) {
 		t.Fatalf("unknown drive model = %q", got)
 	}
 }
+
+// A drive's port is its sysfs path above the SCSI host, which stays when it
+// comes back as another /dev/srN.
+func TestPortFromSysfs(t *testing.T) {
+	sys := t.TempDir()
+	usb := filepath.Join(sys, "devices", "pci0000:00", "usb2", "2-1", "2-1.3", "2-1.3:1.0")
+	for _, n := range []struct{ node, host string }{{"sr0", "host4"}, {"sr1", "host3"}} {
+		dev := filepath.Join(usb, n.host, "target", "lun")
+		if err := os.MkdirAll(dev, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(sys, "block", n.node), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(dev, filepath.Join(sys, "block", n.node, "device")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	block := filepath.Join(sys, "block")
+	a, b := portFrom(block, "/dev/sr0"), portFrom(block, "/dev/sr1")
+	if a == "" || a != b || filepath.Base(a) != "2-1.3:1.0" {
+		t.Fatalf("ports %q %q", a, b)
+	}
+	if got := portFrom(block, "/dev/sr9"); got != "" {
+		t.Fatalf("unknown drive port = %q", got)
+	}
+}
